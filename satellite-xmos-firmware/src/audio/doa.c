@@ -206,7 +206,11 @@ static int estimate(doa_state_t *state, const int32_t *mics, int restart)
     if (confidence < DOA_MIN_CONFIDENCE) {
         return 0;
     }
-    if (tau_ns * tau_ns + tau_ew * tau_ew < DOA_MIN_TDOA_SAMPLES * DOA_MIN_TDOA_SAMPLES) {
+    const float tau_sq = tau_ns * tau_ns + tau_ew * tau_ew;
+    if (tau_sq < DOA_MIN_TDOA_SAMPLES * DOA_MIN_TDOA_SAMPLES) {
+        return 0;
+    }
+    if (tau_sq > (float)(DOA_MAX_LAG_SAMPLES * DOA_MAX_LAG_SAMPLES)) {
         return 0;
     }
 

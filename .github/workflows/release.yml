@@ -43,7 +43,7 @@ jobs:
       firmware_version: ${{ steps.version.outputs.firmware_version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
         with:
           submodules: recursive
           fetch-depth: 0
@@ -92,7 +92,7 @@ jobs:
           bash tools/ci/package_firmware_deb.sh
 
       - name: Save firmware artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.FIRMWARE_ARTIFACT_NAME }}
           path: |
@@ -100,7 +100,7 @@ jobs:
             !./dist/*.deb
 
       - name: Save Debian package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ env.DEBIAN_PACKAGE_ARTIFACT_NAME }}
           path: ./dist/*.deb
@@ -119,13 +119,13 @@ jobs:
 
     steps:
       - name: Get Release Binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ env.FIRMWARE_ARTIFACT_NAME }}
           path: ${{ env.RELEASE_SOURCES_DIR }}
 
       - name: Get Debian package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: ${{ env.DEBIAN_PACKAGE_ARTIFACT_NAME }}
           path: ${{ env.RELEASE_ASSETS_DIR }}
