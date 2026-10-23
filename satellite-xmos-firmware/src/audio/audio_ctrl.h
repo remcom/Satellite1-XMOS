@@ -27,5 +27,10 @@ mic_mode_t audio_ctrl_get_mic_mode(void);
 /** Called by the pipeline once per frame. */
 void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_mask);
 
+/** Latest DOA result. `updated` is always 0: a frame-long flag is too short
+ *  for a polling reader, use audio_ctrl_get_doa_update_count() instead. */
 doa_result_t audio_ctrl_get_doa(void);
+/** Number of new DOA results since boot (wraps). Read it before
+ *  audio_ctrl_get_doa() so a changed count is never paired with an older result. */
+uint32_t audio_ctrl_get_doa_update_count(void);
 void audio_ctrl_get_mic_masks(uint8_t *ch0_mask, uint8_t *ch1_mask);

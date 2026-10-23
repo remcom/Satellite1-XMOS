@@ -42,6 +42,7 @@ void mic_frontend_update(mic_frontend_state_t *state,
 
     switch (mode) {
     case MIC_MODE_PAIR_EW:
+    case MIC_MODE_AVERAGE:  /* so a later switch to AUTO_PAIR starts from E/W */
         set_pair(state, MIC_IDX_EAST);
         return;
     case MIC_MODE_PAIR_NS:

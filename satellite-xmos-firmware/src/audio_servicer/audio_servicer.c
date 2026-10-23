@@ -12,6 +12,8 @@
 
 #include "FreeRTOS.h"
 
+/* DOA update count at the previous DOA read; only the servicer task touches it */
+static uint32_t doa_read_count;
 
 static control_cmd_info_t audio_servicer_resid_cmd_map[] = {
     { AUDIO_SERVICER_CMD_MIC_GAIN, 1, sizeof(uint8_t), CMD_READ_WRITE },
@@ -52,12 +54,15 @@ static control_ret_t audio_servicer_read_cmd(control_resid_t resid, control_cmd_
 
     case AUDIO_SERVICER_CMD_DOA:
     {
+        const uint32_t count = audio_ctrl_get_doa_update_count();
         const doa_result_t doa = audio_ctrl_get_doa();
+        const int updated = count != doa_read_count;
+        doa_read_count = count;
         payload_ptr[0] = (uint8_t)(doa.azimuth_deg & 0xFF);
         payload_ptr[1] = (uint8_t)(doa.azimuth_deg >> 8);
         payload_ptr[2] = doa.confidence;
         payload_ptr[3] = (doa.valid ? AUDIO_SERVICER_DOA_FLAG_VALID : 0) |
-                         (doa.updated ? AUDIO_SERVICER_DOA_FLAG_UPDATED : 0);
+                         (updated ? AUDIO_SERVICER_DOA_FLAG_UPDATED : 0);
         break;
     }
 

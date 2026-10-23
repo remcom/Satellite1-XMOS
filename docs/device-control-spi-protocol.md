@@ -275,7 +275,9 @@ For Satellite1, `LED_RING_NUM_LEDS` is `24`, so the raw write payload is
 direction indicator. While enabled and the audio servicer reports a valid DOA,
 the LED pointing at the talker shows the given three bytes (same byte order as
 `WRITE_RAW`) on top of the last `WRITE_RAW` frame. The indicator follows the
-DOA every 50 ms and disappears when the DOA is no longer valid. Which LED faces
+DOA every 50 ms and disappears when the DOA is no longer valid. Nothing is
+drawn until the first `WRITE_RAW` has been received, so sending
+`DOA_INDICATOR` first does not blank the ring. Which LED faces
 the North mic is set by `appconfLED_RING_DOA_LED_OFFSET` and
 `appconfLED_RING_DOA_CLOCKWISE`.
 
@@ -316,9 +318,12 @@ Read responses start with the command status byte, like the other servicers:
   Switching the pair makes the AEC and IC re-adapt briefly.
 - `DOA`: azimuth in degrees as little-endian `uint16` (`0..359`, `0` = North
   mic, `90` = East mic), confidence (`0..255`), flags. Flag bit `0` is set
-  while the result is valid (produced within the last ~0.5 s), bit `1` when it
-  was produced in the most recent audio frame. The DOA only updates during
-  speech while no audio is played back.
+  while the result is valid (produced within the last ~0.5 s). Bit `1` is set
+  when at least one new result was produced since the previous `DOA` read, so
+  a host polling at any rate sees every update; the read clears it. The DOA
+  only updates during speech while no audio is played back, and stays paused
+  for ~400 ms after playback stops so the speaker tail and room reverb do not
+  steer it.
 - `MIC_PAIR`: bitmask of the mics feeding pipeline channel 0, then channel 1.
   Bit `0` North, bit `1` South, bit `2` East, bit `3` West.
 

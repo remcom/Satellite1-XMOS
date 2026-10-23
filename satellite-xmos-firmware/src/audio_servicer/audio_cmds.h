@@ -15,4 +15,4 @@ enum e_audio_servicer_cmds
 
 // AUDIO_SERVICER_CMD_DOA flags
 #define AUDIO_SERVICER_DOA_FLAG_VALID    (1 << 0)
-#define AUDIO_SERVICER_DOA_FLAG_UPDATED  (1 << 1)
+#define AUDIO_SERVICER_DOA_FLAG_UPDATED  (1 << 1)  // a new result since the previous DOA read

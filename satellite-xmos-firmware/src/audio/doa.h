@@ -29,6 +29,7 @@
 #define DOA_MIN_CONFIDENCE      0.3f
 #define DOA_MIN_TDOA_SAMPLES    0.25f   /* smaller TDOAs mean the source is above the ring */
 #define DOA_HOLD_FRAMES         33      /* a result stays valid for ~0.5 s */
+#define DOA_PLAYBACK_HANGOVER_FRAMES 27 /* ~400 ms of speaker tail and room reverb after playback stops */
 
 typedef struct {
     float re;
@@ -50,6 +51,7 @@ typedef struct {
     float noise_floor;
     uint32_t frames_since_speech;
     uint32_t frames_since_result;
+    uint32_t frames_since_playback;
     doa_result_t result;
 } doa_state_t;
 
@@ -60,7 +62,9 @@ void doa_init(doa_state_t *state);
  *
  * \param mics            4 channels (North, South, East, West) of DOA_FRAME_SIZE samples
  * \param playback_active non-zero while the speaker plays audio; the echo would
- *                        otherwise steer the estimate towards the speaker
+ *                        otherwise steer the estimate towards the speaker. The
+ *                        estimate stays gated for DOA_PLAYBACK_HANGOVER_FRAMES
+ *                        after playback stops.
  * \return                the current result (also kept in state->result)
  */
 const doa_result_t *doa_process(doa_state_t *state,

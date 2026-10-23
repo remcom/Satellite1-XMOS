@@ -149,6 +149,33 @@ static void test_doa_gated_during_playback(void)
     CHECK(!res.valid, "DOA must not update while the speaker plays");
 }
 
+static void test_doa_playback_hangover(void)
+{
+    static doa_state_t st;
+    static int32_t mics[4 * DOA_FRAME_SIZE];
+    doa_init(&st);
+    unsigned frame = 0;
+    for (; frame < 20; frame++) {
+        make_frame(mics, frame, 90, 0.035, 0.0, 1e-4);
+        doa_process(&st, mics, 0);
+    }
+    for (; frame < 40; frame++) {
+        make_frame(mics, frame, 90, 0.035, 0.05, 1e-4);
+        doa_process(&st, mics, 1);
+    }
+    /* speaker tail: the estimate stays gated for the hangover after playback stops */
+    int first_update = -1;
+    for (int i = 0; i < DOA_PLAYBACK_HANGOVER_FRAMES + 5; i++, frame++) {
+        make_frame(mics, frame, 90, 0.035, 0.05, 1e-4);
+        if (doa_process(&st, mics, 0)->updated && first_update < 0) {
+            first_update = i;
+        }
+    }
+    CHECK(first_update == DOA_PLAYBACK_HANGOVER_FRAMES - 1,
+          "first DOA %d frames after playback, expected %d", first_update,
+          DOA_PLAYBACK_HANGOVER_FRAMES - 1);
+}
+
 static void test_doa_silence_is_invalid(void)
 {
     static doa_state_t st;
@@ -240,6 +267,27 @@ static void test_auto_pair_switching(void)
     CHECK(st.ch0 == MIC_IDX_SOUTH, "switched again within the dwell time");
 }
 
+static void test_average_resets_auto_pair(void)
+{
+    mic_frontend_state_t st;
+    mic_frontend_init(&st);
+    const doa_result_t none = {0};
+    doa_result_t south = { .azimuth_deg = 180, .confidence = 200, .valid = 1, .updated = 1 };
+
+    for (int i = 0; i < MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES; i++) {
+        mic_frontend_update(&st, MIC_MODE_AUTO_PAIR, &none);
+    }
+    for (int i = 0; i < MIC_FRONTEND_AUTO_STABLE_FRAMES; i++) {
+        mic_frontend_update(&st, MIC_MODE_AUTO_PAIR, &south);
+    }
+    CHECK(st.ch0 == MIC_IDX_SOUTH, "setup: expected South pair, got %u", st.ch0);
+
+    mic_frontend_update(&st, MIC_MODE_AVERAGE, &none);
+    mic_frontend_update(&st, MIC_MODE_AUTO_PAIR, &none);
+    CHECK(st.ch0 == MIC_IDX_EAST && st.ch1 == MIC_IDX_WEST,
+          "AUTO_PAIR after AVERAGE starts from %u/%u, expected East/West", st.ch0, st.ch1);
+}
+
 static void test_gain(void)
 {
     CHECK(mic_gain_db_to_q16(0) == 65536, "0 dB is %d", mic_gain_db_to_q16(0));
@@ -261,10 +309,12 @@ int main(void)
     test_fft_matches_dft();
     test_doa_directions();
     test_doa_gated_during_playback();
+    test_doa_playback_hangover();
     test_doa_silence_is_invalid();
     test_average_mode();
     test_fixed_pairs();
     test_auto_pair_switching();
+    test_average_resets_auto_pair();
     test_gain();
 
     printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);

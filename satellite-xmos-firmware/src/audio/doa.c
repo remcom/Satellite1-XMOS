@@ -71,6 +71,7 @@ void doa_init(doa_state_t *state)
     }
     state->frames_since_speech = DOA_RESET_FRAMES;
     state->frames_since_result = DOA_HOLD_FRAMES;
+    state->frames_since_playback = DOA_PLAYBACK_HANGOVER_FRAMES;
 }
 
 /* Normalised (PHAT) b * conj(a), whose correlation peaks at t_b - t_a. */
@@ -240,8 +241,15 @@ const doa_result_t *doa_process(doa_state_t *state,
     const int speech = (energy > DOA_MIN_ENERGY) &&
                        (energy > state->noise_floor * DOA_SPEECH_SNR);
 
+    if (playback_active) {
+        state->frames_since_playback = 0;
+    } else if (state->frames_since_playback < DOA_PLAYBACK_HANGOVER_FRAMES) {
+        state->frames_since_playback++;
+    }
+    const int echo = state->frames_since_playback < DOA_PLAYBACK_HANGOVER_FRAMES;
+
     state->result.updated = 0;
-    if (speech && !playback_active) {
+    if (speech && !echo) {
         if (estimate(state, mics, state->frames_since_speech >= DOA_RESET_FRAMES)) {
             state->result.updated = 1;
             state->frames_since_result = 0;
