@@ -19,6 +19,12 @@ v{[0-255]}.{[0-255]}.{[0-255]}-rc.{[1-255]}
 v{[0-255]}.{[0-255]}.{[0-255]}-dev.{[1-255]}
 ```
 
+## Releases
+
+Releases are built by `.github/workflows/release.yml`. Publishing a GitHub release (or pre-release) triggers the workflow, which writes the release tag into `firmware_version.txt`, builds the firmware with that version and attaches the binaries and Debian package to the release. The tag must follow one of the formats above (e.g. `v1.2.0` or `v1.2.0-beta.1`), otherwise the build fails before compiling.
+
+The workflow can also be started manually (Actions → Build and Release Firmware → Run workflow) to build without publishing; it then uses the given version, or `<last tag>-dev` when left empty.
+
 ## firmware_version.txt
 By default the versioning.py scripts obtains the actual firmware from the `firmware_version.txt` in the project root.
 
