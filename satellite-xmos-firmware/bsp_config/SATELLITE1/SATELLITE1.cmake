@@ -39,25 +39,22 @@ target_link_options(fph_ffva_board_support_satellite1
 # West:  5 (pin 1 rising edge )
 # pins 2 & 3 are not used
 
-# use East as first and West as second mic
-set(MIC_MAPPING "4, 5")
+# Order N, S, E, W: the mic front end (src/audio/mic_frontend.h) relies on it
+set(MIC_MAPPING "0, 1, 4, 5")
 
 target_compile_definitions(fph_ffva_board_support_satellite1
     INTERFACE
-        XCOREAI_EXPLORER=1
         PLATFORM_SUPPORTS_TILE_0=1
         PLATFORM_SUPPORTS_TILE_1=1
         PLATFORM_SUPPORTS_TILE_2=0
         PLATFORM_SUPPORTS_TILE_3=0
-        USB_TILE_NO=0
-        USB_TILE=tile[USB_TILE_NO]
 
         MIC_ARRAY_CONFIG_MCLK_FREQ=24576000
         MIC_ARRAY_CONFIG_PDM_FREQ=3072000
         MIC_ARRAY_CONFIG_SAMPLES_PER_FRAME=240
         MIC_ARRAY_CONFIG_USE_DDR=1
         MIC_ARRAY_CONFIG_MIC_INPUT=8
-        MIC_ARRAY_CONFIG_MIC_COUNT=2
+        MIC_ARRAY_CONFIG_MIC_COUNT=4
         MIC_ARRAY_CONFIG_INPUT_MAPPING={${MIC_MAPPING}}
         
         MIC_ARRAY_CONFIG_CLOCK_BLOCK_A=XS1_CLKBLK_1

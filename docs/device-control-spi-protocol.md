@@ -28,6 +28,7 @@ The protocol version is returned by reading `CONTROL_GET_VERSION` from
 | `211` | `GPIO_CONTROLLER_RESOURCE_IN_A` | GPIO servicer | Registered by current Satellite1 board config |
 | `212` | `GPIO_CONTROLLER_RESOURCE_IN_B` | GPIO servicer | Defined, but not registered by current Satellite1 board config |
 | `221` | `GPIO_CONTROLLER_RESOURCE_OUT_A` | GPIO servicer | Defined, but not registered by current Satellite1 board config |
+| `230` | `AUDIO_SERVICER_RESID` | Audio servicer | Registered when SPI device control is enabled; runs on the mic array tile |
 | `240` | `DFU_CONTROLLER_SERVICER_RESID` | DFU servicer | Registered when SPI device control is enabled |
 
 The current Satellite1 board config initializes two GPIO resource descriptors but
@@ -260,16 +261,70 @@ Resource:
 | --- | --- |
 | `200` | `LED_RING_SERVICER_RESID` |
 
-Command:
+Commands:
 
 | Command | Encoded value | Direction | Payload length | Response |
 | --- | --- | --- | --- | --- |
 | `LED_RING_SERVICER_CMD_WRITE_RAW` (`0`) | `0x00` | Write | `3 * LED_RING_NUM_LEDS` bytes | Status-only frame |
+| `LED_RING_SERVICER_CMD_DOA_INDICATOR` (`1`) | `0x01` | Write | 4 bytes: enable, LED bytes 0..2 | Status-only frame |
 
 For Satellite1, `LED_RING_NUM_LEDS` is `24`, so the raw write payload is
-`72` bytes. The payload is passed directly to `rtos_ws2812_write()`.
+`72` bytes, three bytes per LED in the order the WS2812 LEDs expect.
+
+`LED_RING_SERVICER_CMD_DOA_INDICATOR` enables (`1`) or disables (`0`) the
+direction indicator. While enabled and the audio servicer reports a valid DOA,
+the LED pointing at the talker shows the given three bytes (same byte order as
+`WRITE_RAW`) on top of the last `WRITE_RAW` frame. The indicator follows the
+DOA every 50 ms and disappears when the DOA is no longer valid. Which LED faces
+the North mic is set by `appconfLED_RING_DOA_LED_OFFSET` and
+`appconfLED_RING_DOA_CLOCKWISE`.
 
 The LED ring servicer does not implement read commands.
+
+### Audio Servicer
+
+References:
+
+- `satellite-xmos-firmware/src/audio_servicer/audio_servicer.h`
+- `satellite-xmos-firmware/src/audio_servicer/audio_cmds.h`
+- `satellite-xmos-firmware/src/audio_servicer/audio_servicer.c`
+- `satellite-xmos-firmware/src/audio/audio_ctrl.h`
+
+Resource:
+
+| Resource ID | Symbol |
+| --- | --- |
+| `230` | `AUDIO_SERVICER_RESID` |
+
+Commands:
+
+| Command | ID | Direction | Command-map payload length | SPI read request payload length |
+| --- | --- | --- | --- | --- |
+| `AUDIO_SERVICER_CMD_MIC_GAIN` | `0` | Read/write | 1 byte | 2 bytes |
+| `AUDIO_SERVICER_CMD_MIC_MODE` | `1` | Read/write | 1 byte | 2 bytes |
+| `AUDIO_SERVICER_CMD_DOA` | `2` | Read | 4 bytes | 5 bytes |
+| `AUDIO_SERVICER_CMD_MIC_PAIR` | `3` | Read | 2 bytes | 3 bytes |
+
+Read responses start with the command status byte, like the other servicers:
+`[23, status, data...]` on the wire.
+
+- `MIC_GAIN`: mic gain in dB, `0..30`, applied after the AEC. Default `20`.
+  Larger values are rejected with `SERVICER_WRONG_PAYLOAD`.
+- `MIC_MODE`: `0` East/West pair (default), `1` North/South pair,
+  `2` average of (North, East) and (South, West), `3` automatic pair selection
+  from the DOA. Other values are rejected with `SERVICER_WRONG_PAYLOAD`.
+  Switching the pair makes the AEC and IC re-adapt briefly.
+- `DOA`: azimuth in degrees as little-endian `uint16` (`0..359`, `0` = North
+  mic, `90` = East mic), confidence (`0..255`), flags. Flag bit `0` is set
+  while the result is valid (produced within the last ~0.5 s), bit `1` when it
+  was produced in the most recent audio frame. The DOA only updates during
+  speech while no audio is played back.
+- `MIC_PAIR`: bitmask of the mics feeding pipeline channel 0, then channel 1.
+  Bit `0` North, bit `1` South, bit `2` East, bit `3` West.
+
+Writes to `DOA` and `MIC_PAIR` are rejected with `CONTROL_BAD_COMMAND`.
+
+Settings are not persisted; they return to the defaults on reset.
 
 ### DFU Servicer
 
@@ -349,6 +404,9 @@ Image status flags:
   `DFU_CONTROLLER_SERVICER_RESID_DFU_GETFLASHSERIAL` (`90`).
 - Added additive DFU image status read command
   `DFU_CONTROLLER_SERVICER_RESID_DFU_GETIMAGESTATUS` (`91`).
+- Added the audio servicer (`230`): mic gain, mic mode, DOA and active mic
+  pair. The device now waits for four servicers to register.
+- Added additive LED ring command `LED_RING_SERVICER_CMD_DOA_INDICATOR` (`1`).
 
 ### `0x10`
 

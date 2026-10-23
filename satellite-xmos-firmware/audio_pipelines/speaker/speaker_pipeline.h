@@ -4,26 +4,34 @@
 #ifndef SPEAKER_PIPELINE_H_
 #define SPEAKER_PIPELINE_H_
 
+#include <stddef.h>
 #include <stdint.h>
 #include "app_conf.h"
-
-#define AUDIO_PIPELINE_DONT_FREE_FRAME 0
-#define AUDIO_PIPELINE_FREE_FRAME      1
 
 void speaker_pipeline_init(
         void *input_app_data,
         void *output_app_data);
 
+/**
+ * Receives one block of speaker audio from the host.
+ *
+ * \param samples     appconfAUDIO_PIPELINE_REF_CHANNELS x frame_count samples, channel major
+ * \param frame_count must be appconfAUDIO_SPK_PIPELINE_FRAME_ADVANCE
+ */
 void speaker_pipeline_input(
         void *input_app_data,
-        int32_t **input_audio_frames,
-        size_t ch_count,
+        int32_t *samples,
         size_t frame_count);
 
-int speaker_pipeline_output(
+/**
+ * Sends one block to the DAC and passes it on as the AEC reference.
+ *
+ * \param samples     appconfAUDIO_PIPELINE_REF_CHANNELS x frame_count samples, channel major
+ * \param frame_count must be appconfAUDIO_SPK_PIPELINE_FRAME_ADVANCE
+ */
+void speaker_pipeline_output(
         void *output_app_data,
-        int32_t **output_audio_frames,
-        size_t ch_count,
+        const int32_t *samples,
         size_t frame_count);
 
 #endif /* SPEAKER_PIPELINE_H_ */

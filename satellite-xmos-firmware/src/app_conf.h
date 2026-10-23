@@ -15,14 +15,36 @@
 
 /* Application tile specifiers */
 #include "platform/driver_instances.h"
-#define FS_TILE_NO                      FLASH_TILE_NO //currently not used, is it?
 
 
 /* Audio Pipeline Configuration */
 #define appconfAUDIO_CLOCK_FREQUENCY            MIC_ARRAY_CONFIG_MCLK_FREQ
-#define appconfPDM_CLOCK_FREQUENCY              MIC_ARRAY_CONFIG_PDM_FREQ
 #define appconfAUDIO_PIPELINE_SAMPLE_RATE       16000
-#define appconfAUDIO_PIPELINE_CHANNELS          MIC_ARRAY_CONFIG_MIC_COUNT
+/* The mic front end reduces the raw mics to the channels the AEC/IC/NS/AGC pipeline processes */
+#define appconfAUDIO_PIPELINE_MIC_COUNT         MIC_ARRAY_CONFIG_MIC_COUNT
+#define appconfAUDIO_PIPELINE_CHANNELS          2
+#define appconfAUDIO_PIPELINE_REF_CHANNELS      2
+
+/* Mic gain in dB, applied after the AEC. Runtime adjustable via the audio servicer. */
+#ifndef appconfMIC_GAIN_DB_DEFAULT
+#define appconfMIC_GAIN_DB_DEFAULT              20
+#endif
+
+/* mic_mode_t, see audio/mic_frontend.h. Runtime adjustable via the audio servicer. */
+#ifndef appconfMIC_MODE_DEFAULT
+#define appconfMIC_MODE_DEFAULT                 0 /* MIC_MODE_PAIR_EW */
+#endif
+
+/*
+ * LED ring direction indicator: the LED that sits at the North mic, and whether
+ * LED indices increase towards the East mic. Needs to be confirmed on hardware.
+ */
+#ifndef appconfLED_RING_DOA_LED_OFFSET
+#define appconfLED_RING_DOA_LED_OFFSET          0
+#endif
+#ifndef appconfLED_RING_DOA_CLOCKWISE
+#define appconfLED_RING_DOA_CLOCKWISE           1
+#endif
 
 #ifndef appconfAUDIO_SPK_PL_SR_FACTOR
 #define appconfAUDIO_SPK_PL_SR_FACTOR           3
@@ -86,10 +108,6 @@
 #define appconfI2S_AUDIO_SAMPLE_RATE appconfAUDIO_PIPELINE_SAMPLE_RATE
 #endif
 
-#ifndef appconfI2S_ESP_ENABLED
-#define appconfI2S_ESP_ENABLED     0
-#endif
-
 #define appconfI2S_AUDIO_INPUTS    1
 #define appconfI2S_AUDIO_OUTPUTS   2
 
@@ -97,11 +115,7 @@
 #define appconfEXTERNAL_MCLK       0
 #endif
 
-/*
- * This option sends all 6 16 KHz channels (two channels of processed audio,
- * stereo reference audio, and stereo microphone audio) out over a single
- * 48 KHz I2S line.
- */
+/* TDM output is not supported; app_conf_check.h rejects it. */
 #ifndef appconfI2S_TDM_ENABLED
 #define appconfI2S_TDM_ENABLED     0
 #endif
@@ -112,42 +126,15 @@
 #define appconfI2S_MODE            appconfI2S_MODE_MASTER
 #endif
 
-#define appconfSPI_AUDIO_RELEASE   0
-#define appconfSPI_AUDIO_TESTING   1
-#ifndef appconfSPI_AUDIO_MODE
-#define appconfSPI_AUDIO_MODE      appconfSPI_AUDIO_TESTING
-#endif
-
-
 #include "app_conf_check.h"
-
-/* I/O and interrupt cores for Tile 0 */
-#define appconfSPI_IO_CORE                      1 /* Must be kept off core 0 with the RTOS tick ISR */
-#define appconfSPI_INTERRUPT_CORE               2 /* Must be kept off I/O cores. */
-
-/* I/O and interrupt cores for Tile 1 */
-#define appconfPDM_MIC_IO_CORE                  1 /* Must be kept off core 0 with the RTOS tick ISR */
-#define appconfI2S_IO_CORE                      2 /* Must be kept off core 0 with the RTOS tick ISR */
-#define appconfI2C_IO_CORE                      5 /* Must be kept off core 0 with the RTOS tick ISR */
-#define appconfPDM_MIC_INTERRUPT_CORE           4 /* Must be kept off I/O cores. Best kept off core 0 with the tick ISR. */
-#define appconfI2S_INTERRUPT_CORE               5 /* Must be kept off I/O cores. Best kept off core 0 with the tick ISR. */
-#define appconfI2C_INTERRUPT_CORE               4 /* Must be kept off I/O cores. */
 
 /* Task Priorities */
 #define appconfSTARTUP_TASK_PRIORITY              (configMAX_PRIORITIES/2 + 5)
 #define appconfAUDIO_PIPELINE_TASK_PRIORITY       (configMAX_PRIORITIES / 2)
-#define appconfGPIO_RPC_HOST_PRIORITY             (configMAX_PRIORITIES/2 + 2)
-#define appconfGPIO_TASK_PRIORITY                 (configMAX_PRIORITIES/2 + 2)
-#define appconfI2C_TASK_PRIORITY                  (configMAX_PRIORITIES/2 + 2)
-#define appconfSPI_TASK_PRIORITY                  (configMAX_PRIORITIES/2 + 1)
-#define appconfQSPI_FLASH_TASK_PRIORITY           (configMAX_PRIORITIES/2 + 0)
-#define appconfLED_TASK_PRIORITY                  (configMAX_PRIORITIES / 2 - 1)
 
 /* Software PLL settings for mclk recovery configurations */
 /* see fractions.h and register_setup.h for other pll settings */
-#define appconfLRCLK_NOMINAL_HZ     appconfI2S_AUDIO_SAMPLE_RATE
-#define appconfBCLK_NOMINAL_HZ      (appconfLRCLK_NOMINAL_HZ * 64)
-#define PLL_RATIO                   (MIC_ARRAY_CONFIG_MCLK_FREQ / appconfLRCLK_NOMINAL_HZ)
+#define PLL_RATIO                   (MIC_ARRAY_CONFIG_MCLK_FREQ / appconfI2S_AUDIO_SAMPLE_RATE)
 #define PLL_CONTROL_LOOP_COUNT_INT  512  // How many refclk ticks (LRCLK) per control loop iteration. Aim for ~100Hz
 #define PLL_PPM_RANGE               1000 // Max allowable diff in clk count. For the PID constants we
                                          // have chosen, this number should be larger than the number

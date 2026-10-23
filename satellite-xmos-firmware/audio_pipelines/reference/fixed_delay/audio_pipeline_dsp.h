@@ -35,12 +35,23 @@
 #include "vnr_inference_api.h"
 
 
-/* Note: Changing the order here will effect the channel order for
- * audio_pipeline_input() and audio_pipeline_output()
- */
+/* Frames in flight per tile: one per stage plus the inter-stage queues (depth 2 each) */
+#define AP_T1_FRAME_COUNT (2 + 2)
+#define AP_T0_FRAME_COUNT (3 + 2 * 2)
+
+/* Reference energy (mean square, full scale = 1.0) above which the speaker counts as playing */
+#define AP_PLAYBACK_ENERGY_THRESHOLD (1e-7f)   /* ~-70 dBFS */
+
 typedef struct {
+    /* Channels being processed. After the AGC stage samples[0] is the final output. */
     int32_t samples[appconfAUDIO_PIPELINE_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
-    int32_t aec_reference_audio_samples[appconfAUDIO_PIPELINE_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
+    /*
+     * The speaker reference until the AEC has run. Afterwards reused:
+     *   [0] AEC+IC output (appconfAUDIO_PIPELINE_STORE_IC_AUDIO)
+     *   [1] AEC+IC+NS output (appconfAUDIO_PIPELINE_STORE_NS_AUDIO)
+     */
+    int32_t aec_reference_audio_samples[appconfAUDIO_PIPELINE_REF_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
+    /* The two mic front end channels, before AEC and gain */
     int32_t mic_samples_passthrough[appconfAUDIO_PIPELINE_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
 
     /* Below is additional context needed by other stages on a per frame basis */

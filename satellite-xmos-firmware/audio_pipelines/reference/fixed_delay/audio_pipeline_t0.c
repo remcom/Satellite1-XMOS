@@ -26,6 +26,7 @@
 #include "app_conf.h"
 #include "audio_pipeline.h"
 #include "audio_pipeline_dsp.h"
+#include "audio/frame_pool.h"
 
 #if appconfAUDIO_PIPELINE_FRAME_ADVANCE != 240
 #error This pipeline is only configured for 240 frame advance
@@ -39,12 +40,11 @@ static vnr_pred_stage_ctx_t DWORD_ALIGNED vnr_pred_stage_state = {};
 static ns_stage_ctx_t DWORD_ALIGNED ns_stage_state = {};
 static agc_stage_ctx_t DWORD_ALIGNED agc_stage_state = {};
 
+static frame_pool_t frame_pool;
+
 static void *audio_pipeline_input_i(void *input_app_data)
 {
-    frame_data_t *frame_data;
-
-    frame_data = pvPortMalloc(sizeof(frame_data_t));
-    memset(frame_data, 0x00, sizeof(frame_data_t));
+    frame_data_t *frame_data = frame_pool_get(&frame_pool);
 
     size_t bytes_received = 0;
     bytes_received = rtos_intertile_rx_len(
@@ -65,11 +65,18 @@ static void *audio_pipeline_input_i(void *input_app_data)
 static int audio_pipeline_output_i(frame_data_t *frame_data,
                                    void *output_app_data)
 {
+    /*
+     * left:  AEC+IC+NS+AGC
+     * right: AEC+IC+NS, without AGC. When the NS stage is skipped (bypass
+     *        build) this buffer still holds reference channel 1.
+     */
+    audio_pipeline_output(output_app_data,
+                          frame_data->samples[0],
+                          frame_data->aec_reference_audio_samples[1],
+                          appconfAUDIO_PIPELINE_FRAME_ADVANCE);
 
-    return audio_pipeline_output(output_app_data,
-                               (int32_t **)frame_data->samples,
-                               6,
-                               appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+    frame_pool_put(&frame_pool, frame_data);
+    return AUDIO_PIPELINE_DONT_FREE_FRAME;
 }
 
 static void stage_vnr_and_ic(frame_data_t *frame_data)
@@ -137,6 +144,8 @@ static void stage_agc(frame_data_t *frame_data)
 
 static void initialize_pipeline_stages(void)
 {
+    frame_pool_init(&frame_pool, sizeof(frame_data_t), AP_T0_FRAME_COUNT);
+
     ic_init(&ic_stage_state.state);
 
     ns_init(&ns_stage_state.state);

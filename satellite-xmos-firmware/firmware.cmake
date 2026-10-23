@@ -32,10 +32,6 @@ set(APP_COMPILE_DEFINITIONS
     DEBUG_PRINT_ENABLE=0
     PLATFORM_USES_TILE_0=1
     PLATFORM_USES_TILE_1=1
-    XUD_CORE_CLOCK=600
-
-    CFG_TUSB_DEBUG_PRINTF=rtos_printf
-    CFG_TUSB_DEBUG=0
 )
 
 set(APP_LINK_OPTIONS
@@ -52,39 +48,14 @@ set(APP_COMMON_LINK_LIBRARIES
 
 
 #**********************
-# Pipeline Options
-# By default only these targets are created:
-#  example_ffva_int_fixed_delay
-#  example_ffva_ua_adec_altarch
+# Firmware variants
+#  fixed_delay: AEC+IC+NS+AGC pipeline
+#  bypass:      fixed_delay build with all DSP stages skipped
 #**********************
-option(ENABLE_ALL_FFVA_PIPELINES  "Create all FFVA pipeline configurations"  OFF)
-
-if(ENABLE_ALL_FFVA_PIPELINES)
-    set(FFVA_PIPELINES_INT
-        bypass
-        fixed_delay
-        adec
-        adec_altarch
-        empty
-    )
-
-    set(FFVA_PIPELINES_UA
-        fixed_delay
-        adec
-        adec_altarch
-        empty
-    )
-else()
-    set(FFVA_PIPELINES_INT
-        adec
-        fixed_delay
-        bypass
-    )
-
-    set(FFVA_PIPELINES_UA
-        adec_altarch
-    )
-endif()
+set(FFVA_PIPELINES_INT
+    fixed_delay
+    bypass
+)
 
 #**********************
 # XMOS Firmware Targets
