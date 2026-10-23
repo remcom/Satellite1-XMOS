@@ -62,7 +62,7 @@
 /*  I/O and interrupt cores for Tile 1   */
 /*****************************************/
 #ifndef appconfPDM_MIC_IO_CORE
-#define appconfPDM_MIC_IO_CORE                  1 /* Must be kept off I/O cores. Must be kept off core 0 with the RTOS tick ISR */
+#define appconfPDM_MIC_IO_CORE                  1 /* Must be kept off core 0 with the RTOS tick ISR */
 #endif /* appconfPDM_MIC_IO_CORE */
 
 #ifndef appconfI2S_IO_CORE
@@ -70,11 +70,11 @@
 #endif /* appconfI2S_IO_CORE */
 
 #ifndef appconfPDM_MIC_INTERRUPT_CORE
-#define appconfPDM_MIC_INTERRUPT_CORE           3 /* Must be kept off I/O cores. Best kept off core 0 with the tick ISR. */
+#define appconfPDM_MIC_INTERRUPT_CORE           4 /* Must be kept off I/O cores. Best kept off core 0 with the tick ISR. */
 #endif /* appconfPDM_MIC_INTERRUPT_CORE */
 
 #ifndef appconfI2S_INTERRUPT_CORE
-#define appconfI2S_INTERRUPT_CORE               4 /* Must be kept off I/O cores. Best kept off core 0 with the tick ISR. */
+#define appconfI2S_INTERRUPT_CORE               5 /* Must be kept off I/O cores. Best kept off core 0 with the tick ISR. */
 #endif /* appconfI2S_INTERRUPT_CORE */
 
 
@@ -82,11 +82,11 @@
 /*  I/O Task Priorities                  */
 /*****************************************/
 #ifndef appconfQSPI_FLASH_TASK_PRIORITY
-#define appconfQSPI_FLASH_TASK_PRIORITY		    ( configMAX_PRIORITIES - 1 )
+#define appconfQSPI_FLASH_TASK_PRIORITY         (configMAX_PRIORITIES/2)
 #endif /* appconfQSPI_FLASH_TASK_PRIORITY */
 
 #ifndef appconfSPI_TASK_PRIORITY
-#define appconfSPI_TASK_PRIORITY                (configMAX_PRIORITIES/2)
+#define appconfSPI_TASK_PRIORITY                (configMAX_PRIORITIES/2 + 1)
 #endif /* appconfSPI_TASK_PRIORITY */
 
 #ifndef appconfDEVICE_CONTROL_SPI_PRIORITY
@@ -101,14 +101,6 @@
 #ifndef appconfAUDIO_CLOCK_FREQUENCY
 #define appconfAUDIO_CLOCK_FREQUENCY        MIC_ARRAY_CONFIG_MCLK_FREQ
 #endif /* appconfAUDIO_CLOCK_FREQUENCY */
-
-#ifndef appconfPDM_CLOCK_FREQUENCY
-#define appconfPDM_CLOCK_FREQUENCY          MIC_ARRAY_CONFIG_PDM_FREQ
-#endif /* appconfPDM_CLOCK_FREQUENCY */
-
-#ifndef appconfPIPELINE_AUDIO_SAMPLE_RATE
-#define appconfPIPELINE_AUDIO_SAMPLE_RATE   16000
-#endif /* appconfPIPELINE_AUDIO_SAMPLE_RATE */
 
 #ifndef appconfDEVICE_CTRL_SPI
 #define appconfDEVICE_CTRL_SPI    0

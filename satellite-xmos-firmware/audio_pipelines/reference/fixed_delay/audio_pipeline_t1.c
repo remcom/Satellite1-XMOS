@@ -20,9 +20,21 @@
 #include "app_conf.h"
 #include "audio_pipeline.h"
 #include "audio_pipeline_dsp.h"
+#include "audio/audio_ctrl.h"
+#include "audio/doa.h"
+#include "audio/frame_pool.h"
+#include "audio/mic_frontend.h"
 
 #if appconfAUDIO_PIPELINE_FRAME_ADVANCE != 240
 #error This pipeline is only configured for 240 frame advance
+#endif
+
+#if appconfAUDIO_PIPELINE_MIC_COUNT != MIC_FRONTEND_MIC_COUNT
+#error The mic front end expects MIC_FRONTEND_MIC_COUNT raw mics
+#endif
+
+#if appconfAUDIO_PIPELINE_FRAME_ADVANCE != DOA_FRAME_SIZE
+#error DOA_FRAME_SIZE must match the pipeline frame advance
 #endif
 
 #if ON_TILE(1)
@@ -31,21 +43,27 @@ static stage_delay_ctx_t DWORD_ALIGNED delay_buf_state = {};
 #endif
 static aec_ctx_t DWORD_ALIGNED aec_state = {};
 
+static frame_pool_t frame_pool;
+
+/*
+ * Raw mics of the frame currently in stage 0. Only the stage 0 task touches it:
+ * the input function fills it and stage_frontend() consumes it before the next
+ * input call.
+ */
+static int32_t DWORD_ALIGNED mic_raw[appconfAUDIO_PIPELINE_MIC_COUNT][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
+static mic_frontend_state_t mic_frontend_state;
+static doa_state_t doa_state;
+
 
 static void *audio_pipeline_input_i(void *input_app_data)
 {
-    frame_data_t *frame_data;
-    frame_data = pvPortMalloc(sizeof(frame_data_t));
+    frame_data_t *frame_data = frame_pool_get(&frame_pool);
     memset(frame_data, 0x00, sizeof(frame_data_t));
 
     audio_pipeline_input(input_app_data,
-                       (int32_t **)frame_data->aec_reference_audio_samples,
-                       4,
-                       appconfAUDIO_PIPELINE_FRAME_ADVANCE);
-
-    frame_data->vnr_pred_flag = 0;
-
-    memcpy(frame_data->samples, frame_data->mic_samples_passthrough, sizeof(frame_data->samples));
+                         &frame_data->aec_reference_audio_samples[0][0],
+                         &mic_raw[0][0],
+                         appconfAUDIO_PIPELINE_FRAME_ADVANCE);
 
     return frame_data;
 }
@@ -59,7 +77,43 @@ static int audio_pipeline_output_i(frame_data_t *frame_data,
                       frame_data,
                       sizeof(frame_data_t));
 
-    return AUDIO_PIPELINE_FREE_FRAME;
+    frame_pool_put(&frame_pool, frame_data);
+    return AUDIO_PIPELINE_DONT_FREE_FRAME;
+}
+
+static int playback_active(const frame_data_t *frame_data)
+{
+    float energy = 0.0f;
+    for (int ch = 0; ch < appconfAUDIO_PIPELINE_REF_CHANNELS; ch++) {
+        for (int i = 0; i < appconfAUDIO_PIPELINE_FRAME_ADVANCE; i++) {
+            const float s = (float)frame_data->aec_reference_audio_samples[ch][i] * (1.0f / 2147483648.0f);
+            energy += s * s;
+        }
+    }
+    energy /= (float)(appconfAUDIO_PIPELINE_REF_CHANNELS * appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+    return energy > AP_PLAYBACK_ENERGY_THRESHOLD;
+}
+
+/* Reduces the raw mics to the pipeline channels and updates the DOA estimate. */
+static void stage_frontend(frame_data_t *frame_data)
+{
+    const mic_mode_t mode = audio_ctrl_get_mic_mode();
+
+    const doa_result_t *doa = doa_process(&doa_state,
+                                          &mic_raw[0][0],
+                                          playback_active(frame_data));
+    mic_frontend_update(&mic_frontend_state, mode, doa);
+    mic_frontend_process(&mic_frontend_state,
+                         mode,
+                         &mic_raw[0][0],
+                         &frame_data->samples[0][0],
+                         appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+    memcpy(frame_data->mic_samples_passthrough, frame_data->samples, sizeof(frame_data->mic_samples_passthrough));
+
+    uint8_t ch0_mask;
+    uint8_t ch1_mask;
+    mic_frontend_get_masks(&mic_frontend_state, mode, &ch0_mask, &ch1_mask);
+    audio_ctrl_publish(doa, ch0_mask, ch1_mask);
 }
 
 static void stage_delay(frame_data_t *frame_data)
@@ -107,10 +161,15 @@ static void stage_delay(frame_data_t *frame_data)
 #endif /* appconfAUDIO_PIPELINE_SKIP_DELAY */
 }
 
+static void stage_frontend_and_delay(frame_data_t *frame_data)
+{
+    stage_frontend(frame_data);
+    stage_delay(frame_data);
+}
+
 static void stage_aec(frame_data_t *frame_data)
 {
-#if appconfAUDIO_PIPELINE_SKIP_AEC
-#else
+#if !appconfAUDIO_PIPELINE_SKIP_AEC
     int32_t DWORD_ALIGNED stage1_output[AEC_MAX_Y_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
 
     aec_process_frame_1thread(
@@ -127,10 +186,22 @@ static void stage_aec(frame_data_t *frame_data)
     frame_data->aec_corr_factor = aec_calc_corr_factor(&aec_state.aec_main_state, 0);
     memcpy(frame_data->samples, stage1_output, AEC_MAX_Y_CHANNELS * appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));
 #endif
+
+    /*
+     * Mic gain after the AEC: amplifying before it would clip loud echo, which
+     * the linear AEC filter cannot cancel.
+     */
+    mic_apply_gain_q16(&frame_data->samples[0][0],
+                       appconfAUDIO_PIPELINE_CHANNELS * appconfAUDIO_PIPELINE_FRAME_ADVANCE,
+                       audio_ctrl_get_mic_gain_q16());
 }
 
 static void initialize_pipeline_stages(void)
 {
+    frame_pool_init(&frame_pool, sizeof(frame_data_t), AP_T1_FRAME_COUNT);
+    mic_frontend_init(&mic_frontend_state);
+    doa_init(&doa_state);
+
 #if (appconfINPUT_SAMPLES_MIC_DELAY_MS != 0)
     configASSERT(AP_INPUT_SAMPLES_MIC_DELAY_BUF_SIZE_BYTES > 0);
     delay_buf_state.delay_buf = xStreamBufferCreate((size_t)AP_INPUT_SAMPLES_MIC_DELAY_BUF_SIZE_BYTES + AP_INPUT_SAMPLES_MIC_DELAY_CUR_FRAME_BYTES, 0);
@@ -154,12 +225,12 @@ void audio_pipeline_init(
 {
     const int stage_count = 2;
     const pipeline_stage_t stages[] = {
-        (pipeline_stage_t)stage_delay,
+        (pipeline_stage_t)stage_frontend_and_delay,
         (pipeline_stage_t)stage_aec,
     };
 
     const configSTACK_DEPTH_TYPE stage_stack_sizes[] = {
-        configMINIMAL_STACK_SIZE + RTOS_THREAD_STACK_SIZE(stage_delay) + RTOS_THREAD_STACK_SIZE(audio_pipeline_input_i),
+        configMINIMAL_STACK_SIZE + RTOS_THREAD_STACK_SIZE(stage_frontend_and_delay) + RTOS_THREAD_STACK_SIZE(audio_pipeline_input_i),
         configMINIMAL_STACK_SIZE + RTOS_THREAD_STACK_SIZE(stage_aec) + RTOS_THREAD_STACK_SIZE(audio_pipeline_output_i),
     };
 

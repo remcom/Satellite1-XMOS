@@ -3,9 +3,8 @@ from pathlib import Path
 
 from orbit.builder.xmos import build_firmware, reset_device
 from orbit.testing.xmos import run_firmware
-from orbit import BOARD_XTAG_IDS, BOARD_USB_IDS
-from tests import PROJ_ROOT
-from tests.conftest import HW_TESTS
+from orbit import BOARD_XTAG_IDS
+from tests.conftest import HW_TESTS, PROJ_ROOT
 
 import time
 
@@ -61,7 +60,3 @@ def upgrade_image() -> Path:
 @pytest.fixture(scope="session")
 def xtag_id() -> str:
     return BOARD_XTAG_IDS[BOARD]
-
-@pytest.fixture(scope="session")
-def usb_dev_id() -> str:
-    return BOARD_USB_IDS[BOARD]

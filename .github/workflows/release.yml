@@ -1,115 +1,122 @@
-# This workflow uses other callable workflows containing actions that are not
-# certified by GitHub. They are provided by a third-party and are governed by
-# separate terms of service, privacy policy, and support documentation.
+# This workflow uses actions that are not certified by GitHub. They are provided
+# by a third-party and are governed by separate terms of service, privacy
+# policy, and support documentation.
 #
-# This workflow triggers on multiple event sources and is intended as the
-# top-level CI for building artifacts during PRs and creation of release tags
-# (note the tags format specified below).
+# Builds the Satellite1 XMOS firmware and, when a GitHub release is published,
+# attaches the binaries to that release. The release tag (e.g. v1.2.0 or
+# v1.2.0-beta.1) is baked into the firmware as its version, so the tag must
+# follow the format described in docs/versioning.md.
 
-name: Build and Release Artifacts
+name: Build and Release Firmware
 
 on:
-  push:
-    branches:
-      - "staging"
-      - "main"
-    
-  #pull_request:
-  #  branches: [develop]
-  
-  # Allow manually triggering of the workflow.
+  release:
+    types: [published]
+
+  # Manual build without publishing anything.
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Optional release tag. Leave empty to auto-bump for the selected branch.'
+      version:
+        description: "Firmware version (e.g. v1.2.0-dev.1). Leave empty for '<last tag>-dev'."
+        type: string
         required: false
+        default: ""
       package_revision:
         description: 'Debian packaging revision for the XMOS firmware package.'
+        type: string
         required: false
         default: "1"
 
 env:
-  TMP_SOURCES_DIR: ${{ github.workspace }}/tmp/src
-  RELEASE_SOURCES_DIR: ${{ github.workspace }}/release/src
-  RELEASE_ASSETS_DIR: ${{ github.workspace }}/release/assets
+  XCORE_BUILDER: "ghcr.io/xmos/xcore_builder:v3.1"
   FIRMWARE_ARTIFACT_NAME: "satellite_firmware_apps"
   DEBIAN_PACKAGE_ARTIFACT_NAME: "satellite1_firmware_deb"
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  create_release_tag:  
-    name: Bump version and create tag
+  build_firmware:
+    name: Build satellite xmos firmware
     runs-on: ubuntu-latest
     outputs:
-      new_tag: ${{ steps.set_release_tag.outputs.release_tag }} 
-      firmware_artifact_name: ${{ env.FIRMWARE_ARTIFACT_NAME }}
-    
+      firmware_version: ${{ steps.version.outputs.firmware_version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
+          submodules: recursive
           fetch-depth: 0
-      
-      - name: Set Manual Tag (if provided)
-        id: set_tag
-        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
-        run: echo "manual_tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-      
-      - name: Get previous tag
-        id: previous_tag
-        run: |
-          echo "previous_tag=$(git describe --abbrev=0 --tags)" >> $GITHUB_OUTPUT
 
-      - name: Bump version and create tag
-        if:  ${{ !steps.set_tag.outputs.manual_tag }}
-        uses: anothrNick/github-tag-action@1.70.0
-        id: bump
+      - name: Determine firmware version
+        id: version
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # To create a major bump add #major to commit message
-          DEFAULT_BUMP: 'patch'
-          WITH_V: true
-          PRERELEASE: ${{ github.ref_name != 'main' }}
-          PRERELEASE_SUFFIX: ${{ github.ref_name == 'staging' && 'beta' || 'alpha' }}
-          DRY_RUN: false # Set the tag to the commit.
-          INITIAL_VERSION: 1.0.0 
-      
-      - name: create tag with provided tag name
-        if:  ${{ steps.set_tag.outputs.manual_tag }}
-        id: manual_tagging
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          cd ${{ env.RELEASE_SOURCES_DIR }}
-          git tag ${{ steps.set_tag.outputs.manual_tag }}
-          git push origin ${{ steps.set_tag.outputs.manual_tag }}    
-        
-      
-      - name: Export tag name for release
-        if: ${{ steps.set_tag.outputs.manual_tag || steps.bump.outputs.tag }}
-        id: set_release_tag
-        run: |
-            if [ -z "${{ steps.set_tag.outputs.manual_tag }}" ]; then
-              echo "release_tag=${{ steps.bump.outputs.tag }}" >> $GITHUB_OUTPUT
-            else
-              echo "release_tag=${{ steps.set_tag.outputs.manual_tag }}" >> $GITHUB_OUTPUT
-            fi
-      
-  build_firmware:
-    name: Build host_app and firmware
-    uses: ./.github/workflows/apps.yml
-    needs: create_release_tag
-    with:
-      firmware_artifact_name: ${{ needs.create_release_tag.outputs.firmware_artifact_name }}
-      firmware_version_string: ${{ needs.create_release_tag.outputs.new_tag }}
-      package_revision: ${{ github.event.inputs.package_revision || '1' }}
+          if [ -n "$RELEASE_TAG" ]; then
+            version="$RELEASE_TAG"
+          elif [ -n "$INPUT_VERSION" ]; then
+            version="$INPUT_VERSION"
+          else
+            last_tag=$(git describe --abbrev=0 --tags)
+            version="${last_tag%%-*}-dev"
+          fi
+          if [[ ! "$version" =~ ^v[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(-(alpha|beta|rc|dev)(\.[0-9]{1,3})?)?$ ]]; then
+            echo "::error::'$version' is not a valid firmware version (expected vX.Y.Z[-alpha|beta|rc|dev[.N]], see docs/versioning.md)"
+            exit 1
+          fi
+          echo "Firmware version: $version"
+          echo "firmware_version=$version" >> "$GITHUB_OUTPUT"
 
-  create_release:
-    name: Release Firmware
-    needs:
-      - create_release_tag
-      - build_firmware
+      - name: Pull Docker builder
+        run: |
+          docker pull ${XCORE_BUILDER}
+
+      - name: write firmware_version.txt
+        run: |
+          echo "${{ steps.version.outputs.firmware_version }}" > ${{ github.workspace }}/firmware_version.txt
+
+      - name: Build
+        run: |
+          docker run --rm -u $(id -u):$(id -g) -w /ws -v ${{ github.workspace }}:/ws ${XCORE_BUILDER} bash -l tools/ci/build_firmware.sh tools/ci/firmwares.txt
+
+      - name: Save metadata
+        run: |
+          bash tools/ci/log_metadata.sh ./dist/build_metadata.json
+
+      - name: Package Satellite1 XMOS firmware for Debian
+        env:
+          PACKAGE_REVISION: ${{ inputs.package_revision || '1' }}
+        run: |
+          bash tools/ci/package_firmware_deb.sh
+
+      - name: Save firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FIRMWARE_ARTIFACT_NAME }}
+          path: |
+            ./dist/*.*
+            !./dist/*.deb
+
+      - name: Save Debian package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DEBIAN_PACKAGE_ARTIFACT_NAME }}
+          path: ./dist/*.deb
+
+  publish_release:
+    name: Attach firmware to release
+    if: ${{ github.event_name == 'release' }}
+    needs: build_firmware
     runs-on: ubuntu-latest
-    
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+      RELEASE_SOURCES_DIR: ${{ github.workspace }}/release/src
+      RELEASE_ASSETS_DIR: ${{ github.workspace }}/release/assets
+
     steps:
       - name: Get Release Binaries
         uses: actions/download-artifact@v4
@@ -121,32 +128,21 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: ${{ env.DEBIAN_PACKAGE_ARTIFACT_NAME }}
-          path: ${{ github.workspace }}/release/debian
+          path: ${{ env.RELEASE_ASSETS_DIR }}
 
-      - name: Zip Release Binaries
+      - name: Prepare release assets
         run: |
-          cd ${{ env.RELEASE_SOURCES_DIR }}
-          zip -r --symlinks ${{ env.RELEASE_SOURCES_DIR }}/${{ env.FIRMWARE_ARTIFACT_NAME }}.zip .
+          cd ${RELEASE_SOURCES_DIR}
+          zip -r --symlinks ${RELEASE_ASSETS_DIR}/${FIRMWARE_ARTIFACT_NAME}.zip .
+          cp satellite1_firmware_fixed_delay.factory.bin ${RELEASE_ASSETS_DIR}/satellite1_xmos.factory.bin
+          cp satellite1_firmware_fixed_delay.factory.md5 ${RELEASE_ASSETS_DIR}/satellite1_xmos.factory.md5
+          ls -l ${RELEASE_ASSETS_DIR}
 
-      - name: Prepare standalone factory assets
+      - name: Upload assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p ${{ env.RELEASE_ASSETS_DIR }}
-          cp ${{ env.RELEASE_SOURCES_DIR }}/satellite1_firmware_fixed_delay.factory.bin ${{ env.RELEASE_ASSETS_DIR }}/satellite1_xmos.factory.bin
-          cp ${{ env.RELEASE_SOURCES_DIR }}/satellite1_firmware_fixed_delay.factory.md5 ${{ env.RELEASE_ASSETS_DIR }}/satellite1_xmos.factory.md5
-
-      - run: tree ${{ env.RELEASE_SOURCES_DIR }}
-      
-      - name: Create release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            ${{ env.RELEASE_SOURCES_DIR }}/${{ env.FIRMWARE_ARTIFACT_NAME }}.zip
-            ${{ env.RELEASE_ASSETS_DIR }}/satellite1_xmos.factory.bin
-            ${{ env.RELEASE_ASSETS_DIR }}/satellite1_xmos.factory.md5
-            ${{ github.workspace }}/release/debian/*.deb
-          generate_release_notes: true
-          append_body: true
-          tag_name: ${{ needs.create_release_tag.outputs.new_tag }}
+          gh release upload "$RELEASE_TAG" ${RELEASE_ASSETS_DIR}/* --clobber --repo "$GITHUB_REPOSITORY"
 
       - name: Update Documentation
         run: |
@@ -154,6 +150,4 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer ${{ secrets.SECOND_REPO_PAT }}" \
             https://api.github.com/repos/FutureProofHomes/Documentation/actions/workflows/update-binaries-xmos.yaml/dispatches \
-            -d '{"ref":"main", "inputs": {"xmos_release_tag": "${{ needs.create_release_tag.outputs.new_tag }}"}}'
-        env:
-          SECOND_REPO_PAT: ${{ secrets.SECOND_REPO_PAT }}
+            -d '{"ref":"main", "inputs": {"xmos_release_tag": "${{ env.RELEASE_TAG }}"}}'

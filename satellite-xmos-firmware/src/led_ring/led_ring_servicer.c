@@ -11,13 +11,74 @@
 
 #include "led_ring_cmds.h"
 #include "rtos_ws2812.h"
+#include "audio/audio_ctrl.h"
 
 #include "FreeRTOS.h"
 
+#define LED_RING_BYTES_PER_LED          3
+#define LED_RING_FRAME_BYTES            (LED_RING_BYTES_PER_LED * LED_RING_NUM_LEDS)
+#define LED_RING_DOA_POLL_MS            50
 
 static control_cmd_info_t led_ring_servicer_resid_cmd_map[] = {
-    { LED_RING_SERVICER_CMD_WRITE_RAW,  3 * LED_RING_NUM_LEDS , sizeof(uint8_t), CMD_WRITE_ONLY },
+    { LED_RING_SERVICER_CMD_WRITE_RAW,      LED_RING_FRAME_BYTES,       sizeof(uint8_t), CMD_WRITE_ONLY },
+    { LED_RING_SERVICER_CMD_DOA_INDICATOR,  1 + LED_RING_BYTES_PER_LED, sizeof(uint8_t), CMD_WRITE_ONLY },
 };
+
+/*
+ * The host owns the ring through WRITE_RAW. With the DOA indicator enabled, the
+ * LED pointing at the talker is drawn over the host's last frame while a DOA
+ * result is valid. Nothing is drawn until the host sent its first frame, so
+ * enabling the indicator early does not blank the ring. Only the servicer task
+ * touches this state.
+ */
+static uint8_t host_frame[LED_RING_FRAME_BYTES];
+static int host_frame_received;
+static uint8_t doa_colour[LED_RING_BYTES_PER_LED];
+static int doa_enabled;
+static int doa_led = -1;    /* LED currently showing the indicator, -1 for none */
+
+static int led_for_azimuth(unsigned azimuth_deg)
+{
+    int steps = (int)((azimuth_deg * LED_RING_NUM_LEDS + 180) / 360) % LED_RING_NUM_LEDS;
+#if !appconfLED_RING_DOA_CLOCKWISE
+    steps = (LED_RING_NUM_LEDS - steps) % LED_RING_NUM_LEDS;
+#endif
+    return (appconfLED_RING_DOA_LED_OFFSET + steps) % LED_RING_NUM_LEDS;
+}
+
+static void led_ring_refresh(rtos_ws2812_t *ws2812_ctx)
+{
+    if (!host_frame_received) {
+        return;
+    }
+    uint8_t frame[LED_RING_FRAME_BYTES];
+    memcpy(frame, host_frame, sizeof(frame));
+    if (doa_led >= 0) {
+        memcpy(&frame[doa_led * LED_RING_BYTES_PER_LED], doa_colour, LED_RING_BYTES_PER_LED);
+    }
+    rtos_ws2812_write(ws2812_ctx, frame);
+}
+
+/* LED that should show the indicator now, -1 for none */
+static int led_ring_doa_target(void)
+{
+    if (doa_enabled) {
+        const doa_result_t doa = audio_ctrl_get_doa();
+        if (doa.valid) {
+            return led_for_azimuth(doa.azimuth_deg);
+        }
+    }
+    return -1;
+}
+
+static void led_ring_doa_poll(rtos_ws2812_t *ws2812_ctx)
+{
+    const int led = led_ring_doa_target();
+    if (led != doa_led) {
+        doa_led = led;
+        led_ring_refresh(ws2812_ctx);
+    }
+}
 
 //-----------------Servicer read write callback functions-----------------------//
 DEVICE_CONTROL_CALLBACK_ATTR
@@ -58,9 +119,25 @@ static control_ret_t led_ring_servicer_write_cmd(control_resid_t resid, control_
     
     case LED_RING_SERVICER_CMD_WRITE_RAW:
     {
-        debug_printf("GPIO_CONTROLLER_SERVICER_RESID_WRITE_PORT\n");
+        debug_printf("LED_RING_SERVICER_CMD_WRITE_RAW\n");
         debug_printf("%d %d %d\n", payload[0], payload[1], payload[2]);
-        rtos_ws2812_write( ws2812_ctx, &payload[0] );
+        memcpy(host_frame, payload, LED_RING_FRAME_BYTES);
+        host_frame_received = 1;
+        led_ring_refresh(ws2812_ctx);
+        break;
+    }
+
+    case LED_RING_SERVICER_CMD_DOA_INDICATOR:
+    {
+        doa_enabled = payload[0] != 0;
+        const int led = led_ring_doa_target();
+        const int changed = led != doa_led ||
+                            (led >= 0 && memcmp(doa_colour, &payload[1], LED_RING_BYTES_PER_LED) != 0);
+        memcpy(doa_colour, &payload[1], LED_RING_BYTES_PER_LED);
+        doa_led = led;
+        if (changed) {
+            led_ring_refresh(ws2812_ctx);
+        }
         break;
     }
     
@@ -126,7 +203,12 @@ void led_ring_servicer(void *args) {
     };
 
     for(;;){
-        device_control_servicer_cmd_recv(&servicer_ctx, led_ring_servicer_read_cmd, led_ring_servicer_write_cmd, &led_servicer_ctx, RTOS_OSAL_WAIT_FOREVER);
+        /*
+         * On timeout this returns CONTROL_ERROR without logging or dequeuing
+         * anything, so commands that arrive later are still handled.
+         */
+        (void) device_control_servicer_cmd_recv(&servicer_ctx, led_ring_servicer_read_cmd, led_ring_servicer_write_cmd, &led_servicer_ctx, RTOS_OSAL_WAIT_MS(LED_RING_DOA_POLL_MS));
+        led_ring_doa_poll(ws2812_ctx);
     }
 }
 

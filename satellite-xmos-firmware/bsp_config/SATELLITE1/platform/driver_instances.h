@@ -31,8 +31,8 @@
 #define FLASH_CLKBLK  XS1_CLKBLK_1
 #define MCLK_CLKBLK   XS1_CLKBLK_2
 #define SPI_CLKBLK    XS1_CLKBLK_3
-#define XUD_CLKBLK_1  XS1_CLKBLK_4 /* Reserved for lib_xud */
-#define XUD_CLKBLK_2  XS1_CLKBLK_5 /* Reserved for lib_xud */
+// #define UNUSED_CLKBLK XS1_CLKBLK_4
+// #define UNUSED_CLKBLK XS1_CLKBLK_5
 
 /** TILE 1 Clock Blocks */
 #define PDM_CLKBLK_1  XS1_CLKBLK_1
