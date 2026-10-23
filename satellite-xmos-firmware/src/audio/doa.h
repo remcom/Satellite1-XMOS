@@ -6,8 +6,8 @@
  * Direction-of-arrival estimation for the Satellite1 4-mic ring.
  *
  * GCC-PHAT is computed for the North/South and East/West pairs. The azimuth is
- * atan2 of the two time differences, so the ring diameter cancels out and does
- * not need to be known; it only bounds the lag search (DOA_MAX_LAG_SAMPLES).
+ * atan2 of the two time differences, so the ring diameter cancels out; it only
+ * bounds the plausible time differences (DOA_MAX_LAG_SAMPLES).
  *
  * Azimuth convention: 0 degrees points at the North mic, 90 at the East mic,
  * using the mic labels of the BSP (SATELLITE1.cmake).
@@ -18,13 +18,18 @@
 #define DOA_FFT_N               256
 #define DOA_INTERP              2   /* correlation is evaluated at 1/DOA_INTERP sample steps */
 #define DOA_IFFT_N              (DOA_FFT_N * DOA_INTERP)
-#define DOA_MAX_LAG_SAMPLES     8   /* covers mic spacings up to ~17 cm */
+/*
+ * Opposite mics are 7.1 cm apart: at most 0.071 m / 343 m/s * 16 kHz = 3.3
+ * samples, plus margin. Longer time differences, per pair or combined, can only
+ * come from reflections or noise.
+ */
+#define DOA_MAX_LAG_SAMPLES     4
 #define DOA_BAND_LO_HZ          300
 #define DOA_BAND_HI_HZ          3500
 #define DOA_SPEECH_SNR          4.0f    /* frame energy over noise floor (~6 dB) to count as speech */
 #define DOA_MIN_ENERGY          1e-9f   /* ~-90 dBFS; quieter frames are ignored */
 #define DOA_NOISE_FLOOR_RISE    1.002f  /* per-frame noise floor rise (~0.6 dB/s) */
-#define DOA_SMOOTHING           0.6f    /* weight of the previous cross spectrum */
+#define DOA_SMOOTHING           0.95f   /* weight of the previous cross spectrum (~300 ms); less makes reverb steer the estimate */
 #define DOA_RESET_FRAMES        67      /* non-speech frames (~1 s) after which smoothing restarts */
 #define DOA_MIN_CONFIDENCE      0.3f
 #define DOA_MIN_TDOA_SAMPLES    0.25f   /* smaller TDOAs mean the source is above the ring */

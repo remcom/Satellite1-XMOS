@@ -128,7 +128,7 @@ static doa_result_t run_doa(double azimuth_deg, double radius, int playback)
 
 static void test_doa_directions(void)
 {
-    const double radii[] = { 0.025, 0.035, 0.05 };
+    const double radii[] = { 0.025, 0.0355 };   /* Satellite1: 7.1 cm between opposite mics */
     for (unsigned r = 0; r < sizeof(radii) / sizeof(radii[0]); r++) {
         double worst = 0;
         for (int az = 0; az < 360; az += 15) {
@@ -141,6 +141,16 @@ static void test_doa_directions(void)
         }
         printf("radius %.3f m: worst azimuth error %.1f deg\n", radii[r], worst);
     }
+}
+
+static void test_doa_rejects_implausible_delays(void)
+{
+    /*
+     * 10 cm pairs at 45 degrees: each pair's delay (3.3 samples) is within the
+     * search range, but together they are longer than a 7.1 cm ring allows.
+     */
+    const doa_result_t res = run_doa(45, 0.05, 0);
+    CHECK(!res.valid, "delays beyond the ring size gave azimuth %u", res.azimuth_deg);
 }
 
 static void test_doa_gated_during_playback(void)
@@ -308,6 +318,7 @@ int main(void)
 
     test_fft_matches_dft();
     test_doa_directions();
+    test_doa_rejects_implausible_delays();
     test_doa_gated_during_playback();
     test_doa_playback_hangover();
     test_doa_silence_is_invalid();
