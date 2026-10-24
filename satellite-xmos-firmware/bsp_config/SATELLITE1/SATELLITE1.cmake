@@ -32,15 +32,15 @@ target_link_options(fph_ffva_board_support_satellite1
         ${CMAKE_CURRENT_LIST_DIR}/SATELLITE1.xn
 )
 
-# MICS: 
-# North: 0 (pin 0 falling edge) 
-# South: 1 (pin 1 falling edge) 
-# East:  4 (pin 0 rising edge ) 
-# West:  5 (pin 1 rising edge )
+# MICS (pin 0 and pin 1 were swapped before: a talker at the North mic read 180 degrees):
+# North: 1 (pin 1 falling edge)
+# South: 0 (pin 0 falling edge)
+# East:  5 (pin 1 rising edge )
+# West:  4 (pin 0 rising edge )
 # pins 2 & 3 are not used
 
 # Order N, S, E, W: the mic front end (src/audio/mic_frontend.h) relies on it
-set(MIC_MAPPING "0, 1, 4, 5")
+set(MIC_MAPPING "1, 0, 5, 4")
 
 target_compile_definitions(fph_ffva_board_support_satellite1
     INTERFACE
