@@ -2,7 +2,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "xmath/xmath.h"
+
 #include "audio/mic_frontend.h"
+
+/* vect_s32_energy() cannot saturate its accumulators for blocks up to this length */
+#define ENERGY_BLOCK_MAX 1024
 
 static const uint8_t opposite_mic[MIC_FRONTEND_MIC_COUNT] = {
     [MIC_IDX_NORTH] = MIC_IDX_SOUTH,
@@ -164,13 +169,35 @@ int32_t mic_gain_db_to_q16(unsigned gain_db)
 
 void mic_apply_gain_q16(int32_t *samples, size_t count, int32_t gain_q16)
 {
-    for (size_t i = 0; i < count; i++) {
-        int64_t v = ((int64_t)samples[i] * gain_q16 + (1 << 15)) >> 16;
-        if (v > INT32_MAX) {
-            v = INT32_MAX;
-        } else if (v < INT32_MIN) {
-            v = INT32_MIN;
-        }
-        samples[i] = (int32_t)v;
+    if (gain_q16 <= 0) {
+        memset(samples, 0, count * sizeof(int32_t));
+        return;
     }
+    /*
+     * gain = scale * 2^(shl - 30) with scale < 2^31: a Q30 scale, then a
+     * saturating left shift for gains above 2.
+     */
+    const unsigned bits = 32 - (unsigned)__builtin_clz((uint32_t)gain_q16);
+    const unsigned shl = (bits > 17) ? bits - 17 : 0;
+    const int32_t scale = gain_q16 << (14 - shl);
+    vect_s32_scale(samples, samples, count, scale, 0, 0);
+    if (shl > 0) {
+        vect_s32_shl(samples, samples, count, (left_shift_t)shl);
+    }
+}
+
+float audio_mean_square_s32(const int32_t *samples, size_t count)
+{
+    if (count == 0) {
+        return 0.0f;
+    }
+    float sum = 0.0f;
+    for (size_t done = 0; done < count; done += ENERGY_BLOCK_MAX) {
+        const size_t len = (count - done < ENERGY_BLOCK_MAX) ? count - done : ENERGY_BLOCK_MAX;
+        const headroom_t hr = vect_s32_headroom(&samples[done], len);
+        /* sum of (x * 2^hr)^2 * 2^-30, with x in units of 2^-31 full scale */
+        const int64_t e = vect_s32_energy(&samples[done], len, -(right_shift_t)hr);
+        sum += ldexpf((float)e, -32 - 2 * (int)hr);
+    }
+    return sum / (float)count;
 }

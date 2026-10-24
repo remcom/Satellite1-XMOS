@@ -28,7 +28,9 @@
 #include "gpio/gpio_servicer.h"
 #include "led_ring/led_ring_servicer.h"
 #include "audio_servicer/audio_servicer.h"
+#include "stats_servicer/stats_servicer.h"
 #include "audio/audio_ctrl.h"
+#include "audio/stage_stats.h"
 
 
 /* Config headers for sw_pll */
@@ -46,6 +48,9 @@ typedef struct {
 /* Holds ref_frame_t by value: speaker pipeline -> audio pipeline */
 rtos_osal_queue_t *ref_input_queue;
 #endif
+
+/* Frames the audio pipeline has output; the watchdog is only fed while it advances */
+static volatile uint32_t audio_frames_out;
 
 void speaker_pipeline_input(void *input_app_data,
                         int32_t *samples,
@@ -95,7 +100,8 @@ void speaker_pipeline_output(void *output_app_data,
                 portMAX_DELAY);
     
     ref_frame_t ref;
-    
+    const uint32_t src_start = stage_stats_start();
+
     // down sample reference signal to 16kHz if needed 
     if (appconfI2S_AUDIO_SAMPLE_RATE == 3*appconfAUDIO_PIPELINE_SAMPLE_RATE) {
         static int64_t sum[2];
@@ -114,9 +120,18 @@ void speaker_pipeline_output(void *output_app_data,
     } else {
       memcpy( ref.samples, tmp, sizeof(ref.samples) );
     }
-    
-    // send to microphone pipeline as reference
-    (void) rtos_osal_queue_send(ref_input_queue, &ref, RTOS_OSAL_WAIT_FOREVER);
+    stage_stats_end(STAGE_STATS_T1_SPK_SRC, src_start);
+
+    /*
+     * Send to the microphone pipeline as reference. Playback must not wait for
+     * the mic pipeline: if the AEC falls behind, the oldest reference is
+     * dropped instead of stalling the DAC.
+     */
+    if (rtos_osal_queue_send(ref_input_queue, &ref, 0) != RTOS_OSAL_SUCCESS) {
+        static ref_frame_t stale;
+        (void) rtos_osal_queue_receive(ref_input_queue, &stale, 0);
+        (void) rtos_osal_queue_send(ref_input_queue, &ref, 0);
+    }
 
 #endif
 }
@@ -183,12 +198,17 @@ void audio_pipeline_output(void *output_app_data,
     /* I2S expects sample channel format */
     int32_t tmp[appconfAUDIO_SPK_PIPELINE_FRAME_ADVANCE][1][2];
 
-     if (appconfI2S_AUDIO_SAMPLE_RATE == 3*appconfAUDIO_PIPELINE_SAMPLE_RATE) {    
-        // duplicate to 48kHz
+    const uint32_t src_start = stage_stats_start();
+    if (appconfI2S_AUDIO_SAMPLE_RATE == 3*appconfAUDIO_PIPELINE_SAMPLE_RATE) {
+        /* Up sample to 48kHz. A plain sample repeat would leave images above 8 kHz and droop the top of the band. */
+        static int32_t src_data[2][SRC_FF3V_FIR_TAPS_PER_PHASE] __attribute__((aligned (8)));
+
         for( int in_frame=0, out_frame=0; in_frame < frame_count; in_frame++, out_frame += 3 ){
-            for (int k = 0; k < 3; k++) {
-                tmp[out_frame + k][0][0] = left[in_frame];
-                tmp[out_frame + k][0][1] = right[in_frame];
+            tmp[out_frame][0][0] = src_us3_voice_input_sample(src_data[0], src_ff3v_fir_coefs[2], left[in_frame]);
+            tmp[out_frame][0][1] = src_us3_voice_input_sample(src_data[1], src_ff3v_fir_coefs[2], right[in_frame]);
+            for (int k = 1; k < SRC_FF3V_FIR_NUM_PHASES; k++) {
+                tmp[out_frame + k][0][0] = src_us3_voice_get_next_sample(src_data[0], src_ff3v_fir_coefs[2 - k]);
+                tmp[out_frame + k][0][1] = src_us3_voice_get_next_sample(src_data[1], src_ff3v_fir_coefs[2 - k]);
             }
         }
     } else {
@@ -196,14 +216,15 @@ void audio_pipeline_output(void *output_app_data,
             tmp[j][0][0] = left[j];
             tmp[j][0][1] = right[j];
         }
-    }    
-    
-    
+    }
+    stage_stats_end(STAGE_STATS_T0_OUT_SRC, src_start);
+
     rtos_i2s_tx(i2s_ctx,
                 (int32_t*) tmp,
                 appconfAUDIO_SPK_PIPELINE_FRAME_ADVANCE,
                 portMAX_DELAY);
 #endif
+    audio_frames_out = audio_frames_out + 1;
 }
 
 
@@ -212,6 +233,14 @@ void audio_pipeline_output(void *output_app_data,
 void vApplicationMallocFailedHook(void)
 {
     rtos_printf("Malloc Failed on tile %d!\n", THIS_XCORE_TILE);
+    xassert(0);
+    for(;;);
+}
+
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+    (void) xTask;
+    rtos_printf("Stack overflow in task %s on tile %d!\n", pcTaskName, THIS_XCORE_TILE);
     xassert(0);
     for(;;);
 }
@@ -235,11 +264,22 @@ static void reset_watchdog(void)
 
 static void mem_analysis(void)
 {
+#if ON_TILE(0)
+    uint32_t frames_at_last_check = audio_frames_out;
+#endif
 	for (;;) {
 		rtos_printf("Tile[%d]:\n\tMinimum heap free: %d\n\tCurrent heap free: %d\n", THIS_XCORE_TILE, xPortGetMinimumEverFreeHeapSize(), xPortGetFreeHeapSize());
-#if ON_TILE(0)        
-        reset_watchdog();
-#endif        
+#if ON_TILE(0)
+        /*
+         * Tile 0 outputs every frame that made it through both tiles, so a
+         * stalled pipeline on either tile stops the watchdog being fed.
+         */
+        const uint32_t frames = audio_frames_out;
+        if (frames != frames_at_last_check) {
+            reset_watchdog();
+        }
+        frames_at_last_check = frames;
+#endif
         vTaskDelay(pdMS_TO_TICKS(5000));
 	}
 }
@@ -266,6 +306,7 @@ static void device_control_ready_task(void *arg)
 void startup_task(void *arg)
 {
     rtos_printf("Startup task running from tile %d on core %d\n", THIS_XCORE_TILE, portGET_CORE_ID());
+    stage_stats_init();
     platform_start();
 
 #if ON_TILE(MICARRAY_TILE_NO)
@@ -279,6 +320,25 @@ void startup_task(void *arg)
 
 #if ON_TILE(0)
     gpio_servicer_start(device_control_gpio_ctx, device_control_ctx, 1 );
+
+    servicer_t servicer_stats;
+    stats_servicer_init(&servicer_stats);
+
+    servicer_register_ctx_t stats_reg_ctx = {
+        &servicer_stats,
+        device_control_ctx,
+        1,
+        NULL
+    };
+
+    xTaskCreate(
+        stats_servicer,
+        "Stats servicer",
+        RTOS_THREAD_STACK_SIZE(stats_servicer),
+        &stats_reg_ctx,
+        appconfDEVICE_CONTROL_SPI_PRIORITY,
+        NULL
+    );
 
     servicer_t dfu_servicer_ctx;
     dfu_servicer_init(&dfu_servicer_ctx);
@@ -369,7 +429,7 @@ void startup_task(void *arg)
 
 void vApplicationMinimalIdleHook(void)
 {
-    rtos_printf("idle hook on tile %d core %d\n", THIS_XCORE_TILE, rtos_core_id_get());
+    /* No printing here: it would run on every idle pass of every core */
     asm volatile("waiteu");
 }
 

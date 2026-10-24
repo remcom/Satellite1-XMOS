@@ -99,7 +99,7 @@ static void spi_init(void)
     
     device_control_init(device_control_spi_ctx,
                         DEVICE_CONTROL_HOST_MODE,
-                        4, //number of servicers: GPIO, DFU, LED ring, audio
+                        5, //number of servicers: GPIO, DFU, LED ring, audio, stats
                         client_intertile_ctx,
                         1); 
     

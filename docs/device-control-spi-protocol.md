@@ -30,6 +30,7 @@ The protocol version is returned by reading `CONTROL_GET_VERSION` from
 | `221` | `GPIO_CONTROLLER_RESOURCE_OUT_A` | GPIO servicer | Defined, but not registered by current Satellite1 board config |
 | `230` | `AUDIO_SERVICER_RESID` | Audio servicer | Registered when SPI device control is enabled; runs on the mic array tile |
 | `240` | `DFU_CONTROLLER_SERVICER_RESID` | DFU servicer | Registered when SPI device control is enabled |
+| `250` | `STATS_SERVICER_RESID` | Stats servicer | Registered when SPI device control is enabled; runs on tile 0 |
 
 The current Satellite1 board config initializes two GPIO resource descriptors but
 passes `1` to `gpio_servicer_init()`, so only `GPIO_CONTROLLER_RESOURCE_IN_A`
@@ -331,6 +332,55 @@ Writes to `DOA` and `MIC_PAIR` are rejected with `CONTROL_BAD_COMMAND`.
 
 Settings are not persisted; they return to the defaults on reset.
 
+### Stats Servicer
+
+References:
+
+- `satellite-xmos-firmware/src/stats_servicer/stats_servicer.h`
+- `satellite-xmos-firmware/src/stats_servicer/stats_cmds.h`
+- `satellite-xmos-firmware/src/stats_servicer/stats_servicer.c`
+- `satellite-xmos-firmware/src/audio/stage_stats.h`
+
+Resource:
+
+| Resource ID | Symbol |
+| --- | --- |
+| `250` | `STATS_SERVICER_RESID` |
+
+Diagnostics for checking the real-time headroom of the audio pipeline on
+hardware. All commands are read only; values are little-endian.
+
+| Command | ID | Direction | Command-map payload length | SPI read request payload length |
+| --- | --- | --- | --- | --- |
+| `STATS_SERVICER_CMD_STAGE_TIMES` | `0` | Read | 28 bytes | 29 bytes |
+| `STATS_SERVICER_CMD_STACK_FREE` | `1` | Read | 14 bytes | 15 bytes |
+| `STATS_SERVICER_CMD_HEAP_FREE` | `2` | Read | 16 bytes | 17 bytes |
+
+Stages, in the order every per-stage array uses:
+
+| Index | Stage | Tile |
+| --- | --- | --- |
+| `0` | Mic front end and DOA | 1 |
+| `1` | AEC and mic gain | 1 |
+| `2` | Speaker reference 48 to 16 kHz | 1 |
+| `3` | IC and VNR | 0 |
+| `4` | NS | 0 |
+| `5` | AGC | 0 |
+| `6` | Pipeline output 16 to 48 kHz | 0 |
+
+- `STAGE_TIMES`: 7 `uint16` with the last processing time of each stage in
+  microseconds, then 7 `uint16` with the longest time since the previous
+  `STAGE_TIMES` read; the read restarts the maxima. Times saturate at
+  `65535`. A frame is 15 ms (15000 us); a stage taking longer cannot keep up.
+  Stages 0, 1, 3, 4 and 5 run in separate tasks, so each has the full frame.
+- `STACK_FREE`: 7 `uint16` with the lowest free stack seen in the task running
+  each stage, in 4-byte words, sampled every 64 frames. `65535` until sampled.
+  Stage 6 runs in the AGC task, so it reports the same task as stage 5.
+- `HEAP_FREE`: 4 `uint32`: tile 0 free heap, tile 0 lowest free heap since
+  boot, tile 1 free heap, tile 1 lowest free heap since boot, in bytes.
+
+Writes are rejected with `CONTROL_BAD_COMMAND`.
+
 ### DFU Servicer
 
 References:
@@ -412,6 +462,8 @@ Image status flags:
 - Added the audio servicer (`230`): mic gain, mic mode, DOA and active mic
   pair. The device now waits for four servicers to register.
 - Added additive LED ring command `LED_RING_SERVICER_CMD_DOA_INDICATOR` (`1`).
+- Added the stats servicer (`250`): audio stage processing times, stack and
+  heap use. The device now waits for five servicers to register.
 
 ### `0x10`
 

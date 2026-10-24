@@ -14,6 +14,22 @@
 #include "audio/audio_ctrl.h"
 
 #include "FreeRTOS.h"
+#include "task.h"
+
+/*
+ * rtos_ws2812_write() masks interrupts on its core for a whole LED frame
+ * (~750 us). The servicer is kept off the cores taking the RTOS tick (0), the
+ * PDM and I2S interrupts, and the I/O cores, so it cannot delay them.
+ */
+#define LED_RING_CORE_MASK  (((1u << configNUM_CORES) - 1) &               \
+                             ~((1u << 0) |                                 \
+                               (1u << appconfPDM_MIC_IO_CORE) |            \
+                               (1u << appconfI2S_IO_CORE) |                \
+                               (1u << appconfPDM_MIC_INTERRUPT_CORE) |     \
+                               (1u << appconfI2S_INTERRUPT_CORE)))
+#if ON_TILE(WS2812_TILE_NO) && LED_RING_CORE_MASK == 0
+#error No core left for the LED ring servicer
+#endif
 
 #define LED_RING_BYTES_PER_LED          3
 #define LED_RING_FRAME_BYTES            (LED_RING_BYTES_PER_LED * LED_RING_NUM_LEDS)
@@ -170,6 +186,9 @@ void led_ring_servicer_init(servicer_t *servicer)
 }
 
 void led_ring_servicer(void *args) {
+    /* Before anything can write to the ring */
+    vTaskCoreAffinitySet(NULL, LED_RING_CORE_MASK);
+
     device_control_servicer_t servicer_ctx;
 
     servicer_register_ctx_t *servicer_reg_ctx = (servicer_register_ctx_t*)args;

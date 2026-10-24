@@ -77,34 +77,51 @@ static double angle_error(double a, double b)
     return d > 180.0 ? 360.0 - d : d;
 }
 
-static void test_fft_matches_dft(void)
+static void test_correlate_matches_reference(void)
 {
     static doa_state_t st;
     doa_init(&st);
-    doa_complex_t x[64];
-    doa_complex_t ref[64];
-    for (int i = 0; i < 64; i++) {
-        x[i].re = (float)(rng_uniform() - 0.5);
-        x[i].im = (float)(rng_uniform() - 0.5);
+    doa_complex_t cross[DOA_BIN_COUNT];
+    for (int i = 0; i < DOA_BIN_COUNT; i++) {
+        cross[i].re = (float)(rng_uniform() - 0.5);
+        cross[i].im = (float)(rng_uniform() - 0.5);
     }
-    for (int k = 0; k < 64; k++) {
-        double re = 0;
-        double im = 0;
-        for (int n = 0; n < 64; n++) {
-            const double ph = -2.0 * PI * k * n / 64.0;
-            re += x[n].re * cos(ph) - x[n].im * sin(ph);
-            im += x[n].re * sin(ph) + x[n].im * cos(ph);
-        }
-        ref[k].re = (float)re;
-        ref[k].im = (float)im;
-    }
-    doa_fft(x, 64, st.twiddle, 0);
+    float corr[DOA_CORR_LAGS];
+    doa_correlate(&st, cross, corr);
+
     double max_err = 0;
-    for (int k = 0; k < 64; k++) {
-        max_err = fmax(max_err, fabs(x[k].re - ref[k].re));
-        max_err = fmax(max_err, fabs(x[k].im - ref[k].im));
+    for (int l = -DOA_CORR_HALF; l <= DOA_CORR_HALF; l++) {
+        double ref = 0;
+        for (int i = 0; i < DOA_BIN_COUNT; i++) {
+            const double ph = 2.0 * PI * (DOA_BIN_LO + i) * l / DOA_IFFT_N;
+            ref += cross[i].re * cos(ph) - cross[i].im * sin(ph);
+        }
+        max_err = fmax(max_err, fabs(corr[DOA_CORR_HALF + l] - ref));
     }
-    CHECK(max_err < 1e-4, "FFT differs from DFT by %g", max_err);
+    CHECK(max_err < 1e-4, "correlation differs from the direct sum by %g", max_err);
+}
+
+static void test_mean_square(void)
+{
+    static int32_t x[1500];
+    double ref = 0;
+    for (int i = 0; i < 1500; i++) {
+        /* quiet (~-80 dBFS) samples, where a plain 2^-30 energy sum would lose precision */
+        x[i] = (int32_t)((rng_uniform() - 0.5) * 2.0 * 400000.0);
+        const double v = x[i] / 2147483648.0;
+        ref += v * v;
+    }
+    ref /= 1500;
+    const double ms = audio_mean_square_s32(x, 1500);
+    CHECK(fabs(ms - ref) <= 1e-3 * ref, "mean square %g, expected %g", ms, ref);
+
+    for (int i = 0; i < 8; i++) {
+        x[i] = INT32_MIN;
+    }
+    CHECK(fabs(audio_mean_square_s32(x, 8) - 1.0) < 1e-3, "full scale mean square %g",
+          audio_mean_square_s32(x, 8));
+    memset(x, 0, sizeof(x));
+    CHECK(audio_mean_square_s32(x, 1500) == 0.0f, "silence must have zero energy");
 }
 
 /* Runs a quiet lead-in (to settle the noise floor) and then speech from one direction. */
@@ -306,7 +323,19 @@ static void test_gain(void)
     int32_t s[4] = { 1000, -1000, INT32_MAX / 4, INT32_MIN / 4 };
     mic_apply_gain_q16(s, 4, mic_gain_db_to_q16(20));
     CHECK(s[0] == 10000 && s[1] == -10000, "x10 gives %d %d", s[0], s[1]);
-    CHECK(s[2] == INT32_MAX && s[3] == INT32_MIN, "gain must saturate: %d %d", s[2], s[3]);
+    /* the VPU saturates symmetrically */
+    CHECK(s[2] == INT32_MAX && s[3] == -INT32_MAX, "gain must saturate: %d %d", s[2], s[3]);
+
+    int32_t u[2] = { 12345, -12345 };
+    mic_apply_gain_q16(u, 2, mic_gain_db_to_q16(0));
+    CHECK(u[0] == 12345 && u[1] == -12345, "0 dB must not change samples: %d %d", u[0], u[1]);
+
+    int32_t w[2] = { 1 << 20, -(1 << 20) };
+    const int32_t g30 = mic_gain_db_to_q16(30);
+    mic_apply_gain_q16(w, 2, g30);
+    const double expect = (double)(1 << 20) * g30 / 65536.0;
+    CHECK(fabs(w[0] - expect) <= 16 && fabs(w[1] + expect) <= 16, "30 dB gives %d %d, expected %.0f",
+          w[0], w[1], expect);
 }
 
 int main(void)
@@ -316,7 +345,8 @@ int main(void)
         tone_phase[i] = rng_uniform() * 2.0 * PI;
     }
 
-    test_fft_matches_dft();
+    test_correlate_matches_reference();
+    test_mean_square();
     test_doa_directions();
     test_doa_rejects_implausible_delays();
     test_doa_gated_during_playback();

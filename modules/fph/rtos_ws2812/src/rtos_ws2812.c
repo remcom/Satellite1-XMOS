@@ -12,6 +12,8 @@
 
 #define RES 250000    // Width of the low gap between bits to cause a frame to latch
 
+#define START_DELAY 2000  // Lead time before the first bit in ns
+
 #define NS_PER_SEC (1000000000L)
 
 #define NS_PER_CYCLE ( NS_PER_SEC / XS1_TIMER_HZ )
@@ -26,17 +28,20 @@ static void ws2812_local_write(
 {
     port_t p = ctx->ws2812_port;
     const uint32_t hl_value = ctx->hl_value;
-    port_enable(p);
-    port_out(p, 0);
-    int t;
-    t = port_get_trigger_time(p);
 
     //In case two threads try to access at the same time
     rtos_osal_mutex_get(&ctx->lock, RTOS_OSAL_WAIT_FOREVER);
 
-    //To prevent interruption of Tx frame
+    //To prevent interruption of Tx frame. This only masks the calling core:
+    //callers must keep off cores that service time critical interrupts.
     rtos_interrupt_mask_all();
-    
+
+    port_enable(p);
+    port_out(p, 0);
+    //Start a little after the last output: a time that has already passed
+    //would only be reached after the 16 bit port timer wraps (~655 us)
+    int t = port_get_trigger_time(p) + NS_TO_CYCLES(START_DELAY);
+
     for(int i = 0; i < n; i++){
         uint8_t b = buff[i];
         for (int j = 0; j < 8; j++) {
@@ -54,9 +59,11 @@ static void ws2812_local_write(
             b <<= 1;
         }
     }
+    rtos_interrupt_unmask_all();
+
+    //The latch gap only needs the line held low, so it runs unmasked
     t += NS_TO_CYCLES(RES);
     port_out_at_time(p, t, 0);
-    rtos_interrupt_unmask_all();
     rtos_osal_mutex_put(&ctx->lock);
 }
 

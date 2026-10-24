@@ -79,5 +79,15 @@ void mic_frontend_get_masks(const mic_frontend_state_t *state,
 /** Linear Q16 gain for a gain in dB. */
 int32_t mic_gain_db_to_q16(unsigned gain_db);
 
-/** Multiplies samples by a Q16 gain, saturating to the int32 range. */
+/**
+ * Multiplies samples by a Q16 gain on the VPU, saturating symmetrically to
+ * +-INT32_MAX. samples must be word aligned.
+ */
 void mic_apply_gain_q16(int32_t *samples, size_t count, int32_t gain_q16);
+
+/**
+ * Mean square of samples, full scale = 1.0. Uses the VPU with the block's
+ * headroom shifted out, so quiet signals keep their precision. samples must
+ * be word aligned.
+ */
+float audio_mean_square_s32(const int32_t *samples, size_t count);

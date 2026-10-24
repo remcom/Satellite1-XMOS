@@ -24,6 +24,7 @@
 #include "audio/doa.h"
 #include "audio/frame_pool.h"
 #include "audio/mic_frontend.h"
+#include "audio/stage_stats.h"
 
 #if appconfAUDIO_PIPELINE_FRAME_ADVANCE != 240
 #error This pipeline is only configured for 240 frame advance
@@ -58,7 +59,10 @@ static doa_state_t doa_state;
 static void *audio_pipeline_input_i(void *input_app_data)
 {
     frame_data_t *frame_data = frame_pool_get(&frame_pool);
-    memset(frame_data, 0x00, sizeof(frame_data_t));
+    /* The samples and the reference are overwritten below and by the front end */
+    frame_data->vnr_pred_flag = 0;
+    frame_data->max_ref_energy = (float_s32_t){0, 0};
+    frame_data->aec_corr_factor = (float_s32_t){0, 0};
 
     audio_pipeline_input(input_app_data,
                          &frame_data->aec_reference_audio_samples[0][0],
@@ -71,11 +75,12 @@ static void *audio_pipeline_input_i(void *input_app_data)
 static int audio_pipeline_output_i(frame_data_t *frame_data,
                                    void *output_app_data)
 {
+    stage_stats_make_t1_report(&frame_data->t1_stats);
 
     rtos_intertile_tx(intertile_ctx,
                       appconfAUDIOPIPELINE_PORT,
                       frame_data,
-                      sizeof(frame_data_t));
+                      AP_FRAME_TX_BYTES);
 
     frame_pool_put(&frame_pool, frame_data);
     return AUDIO_PIPELINE_DONT_FREE_FRAME;
@@ -83,14 +88,8 @@ static int audio_pipeline_output_i(frame_data_t *frame_data,
 
 static int playback_active(const frame_data_t *frame_data)
 {
-    float energy = 0.0f;
-    for (int ch = 0; ch < appconfAUDIO_PIPELINE_REF_CHANNELS; ch++) {
-        for (int i = 0; i < appconfAUDIO_PIPELINE_FRAME_ADVANCE; i++) {
-            const float s = (float)frame_data->aec_reference_audio_samples[ch][i] * (1.0f / 2147483648.0f);
-            energy += s * s;
-        }
-    }
-    energy /= (float)(appconfAUDIO_PIPELINE_REF_CHANNELS * appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+    const float energy = audio_mean_square_s32(&frame_data->aec_reference_audio_samples[0][0],
+                                               appconfAUDIO_PIPELINE_REF_CHANNELS * appconfAUDIO_PIPELINE_FRAME_ADVANCE);
     return energy > AP_PLAYBACK_ENERGY_THRESHOLD;
 }
 
@@ -108,7 +107,6 @@ static void stage_frontend(frame_data_t *frame_data)
                          &mic_raw[0][0],
                          &frame_data->samples[0][0],
                          appconfAUDIO_PIPELINE_FRAME_ADVANCE);
-    memcpy(frame_data->mic_samples_passthrough, frame_data->samples, sizeof(frame_data->mic_samples_passthrough));
 
     uint8_t ch0_mask;
     uint8_t ch1_mask;
@@ -163,12 +161,15 @@ static void stage_delay(frame_data_t *frame_data)
 
 static void stage_frontend_and_delay(frame_data_t *frame_data)
 {
+    const uint32_t start = stage_stats_start();
     stage_frontend(frame_data);
     stage_delay(frame_data);
+    stage_stats_end(STAGE_STATS_T1_FRONTEND, start);
 }
 
 static void stage_aec(frame_data_t *frame_data)
 {
+    const uint32_t start = stage_stats_start();
 #if !appconfAUDIO_PIPELINE_SKIP_AEC
     int32_t DWORD_ALIGNED stage1_output[AEC_MAX_Y_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
 
@@ -194,6 +195,7 @@ static void stage_aec(frame_data_t *frame_data)
     mic_apply_gain_q16(&frame_data->samples[0][0],
                        appconfAUDIO_PIPELINE_CHANNELS * appconfAUDIO_PIPELINE_FRAME_ADVANCE,
                        audio_ctrl_get_mic_gain_q16());
+    stage_stats_end(STAGE_STATS_T1_AEC, start);
 }
 
 static void initialize_pipeline_stages(void)

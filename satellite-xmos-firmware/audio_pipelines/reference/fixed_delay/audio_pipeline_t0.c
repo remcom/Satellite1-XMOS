@@ -27,6 +27,7 @@
 #include "audio_pipeline.h"
 #include "audio_pipeline_dsp.h"
 #include "audio/frame_pool.h"
+#include "audio/stage_stats.h"
 
 #if appconfAUDIO_PIPELINE_FRAME_ADVANCE != 240
 #error This pipeline is only configured for 240 frame advance
@@ -52,12 +53,14 @@ static void *audio_pipeline_input_i(void *input_app_data)
             appconfAUDIOPIPELINE_PORT,
             portMAX_DELAY);
 
-    xassert(bytes_received == sizeof(frame_data_t));
+    xassert(bytes_received == AP_FRAME_TX_BYTES);
 
     rtos_intertile_rx_data(
             intertile_ctx,
             frame_data,
             bytes_received);
+
+    stage_stats_merge_t1_report(&frame_data->t1_stats);
 
     return frame_data;
 }
@@ -81,6 +84,7 @@ static int audio_pipeline_output_i(frame_data_t *frame_data,
 
 static void stage_vnr_and_ic(frame_data_t *frame_data)
 {
+    const uint32_t start = stage_stats_start();
 #if appconfAUDIO_PIPELINE_SKIP_IC_AND_VNR
 #else
     int32_t DWORD_ALIGNED ic_output[appconfAUDIO_PIPELINE_FRAME_ADVANCE];
@@ -103,10 +107,12 @@ static void stage_vnr_and_ic(frame_data_t *frame_data)
     memcpy(frame_data->aec_reference_audio_samples[0], ic_output, appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));   // Store the interference cancelled audio in the first reference channel
 #endif
 #endif
+    stage_stats_end(STAGE_STATS_T0_IC_VNR, start);
 }
 
 static void stage_ns(frame_data_t *frame_data)
 {
+    const uint32_t start = stage_stats_start();
 #if appconfAUDIO_PIPELINE_SKIP_NS
 #else
     int32_t DWORD_ALIGNED ns_output[appconfAUDIO_PIPELINE_FRAME_ADVANCE];
@@ -120,10 +126,12 @@ static void stage_ns(frame_data_t *frame_data)
     memcpy(frame_data->aec_reference_audio_samples[1], ns_output, appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));   // Store NS audio in the second reference channel
 #endif
 #endif
+    stage_stats_end(STAGE_STATS_T0_NS, start);
 }
 
 static void stage_agc(frame_data_t *frame_data)
 {
+    const uint32_t start = stage_stats_start();
 #if appconfAUDIO_PIPELINE_SKIP_AGC
 #else
     int32_t DWORD_ALIGNED agc_output[appconfAUDIO_PIPELINE_FRAME_ADVANCE];
@@ -140,6 +148,7 @@ static void stage_agc(frame_data_t *frame_data)
             &agc_stage_state.md);
     memcpy(frame_data->samples, agc_output, appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));
 #endif
+    stage_stats_end(STAGE_STATS_T0_AGC, start);
 }
 
 static void initialize_pipeline_stages(void)

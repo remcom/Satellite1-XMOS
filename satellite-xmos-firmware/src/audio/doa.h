@@ -36,6 +36,14 @@
 #define DOA_HOLD_FRAMES         33      /* a result stays valid for ~0.5 s */
 #define DOA_PLAYBACK_HANGOVER_FRAMES 27 /* ~400 ms of speaker tail and room reverb after playback stops */
 
+#define DOA_BIN_LO  ((DOA_BAND_LO_HZ * DOA_FFT_N + DOA_SAMPLE_RATE - 1) / DOA_SAMPLE_RATE)
+#define DOA_BIN_HI  ((DOA_BAND_HI_HZ * DOA_FFT_N) / DOA_SAMPLE_RATE)
+#define DOA_BIN_COUNT (DOA_BIN_HI - DOA_BIN_LO + 1)
+
+/* Correlation lags evaluated, in 1/DOA_INTERP samples: the search range plus one for interpolation */
+#define DOA_CORR_HALF   (DOA_MAX_LAG_SAMPLES * DOA_INTERP + 1)
+#define DOA_CORR_LAGS   (2 * DOA_CORR_HALF + 1)
+
 typedef struct {
     float re;
     float im;
@@ -49,10 +57,11 @@ typedef struct {
 } doa_result_t;
 
 typedef struct {
-    doa_complex_t twiddle[DOA_IFFT_N / 2];
-    float window[DOA_FRAME_SIZE];
-    doa_complex_t cross[2][DOA_FFT_N / 2 + 1];   /* smoothed PHAT cross spectra: NS, EW */
-    doa_complex_t work[DOA_IFFT_N];
+    /* windowed, zero padded mics (N, S, E, W); the VPU FFT turns each into its spectrum in place */
+    int32_t fft_buf[4][DOA_FFT_N] __attribute__((aligned(8)));
+    int32_t window_q30[DOA_FRAME_SIZE] __attribute__((aligned(8)));
+    doa_complex_t lag_step[DOA_BIN_COUNT];      /* e^(j 2 pi k / DOA_IFFT_N): one lag step per band bin */
+    doa_complex_t cross[2][DOA_BIN_COUNT];      /* smoothed PHAT cross spectra over the band: NS, EW */
     float noise_floor;
     uint32_t frames_since_speech;
     uint32_t frames_since_result;
@@ -65,7 +74,8 @@ void doa_init(doa_state_t *state);
 /**
  * Processes one frame.
  *
- * \param mics            4 channels (North, South, East, West) of DOA_FRAME_SIZE samples
+ * \param mics            4 channels (North, South, East, West) of DOA_FRAME_SIZE
+ *                        samples, word aligned (read by the VPU)
  * \param playback_active non-zero while the speaker plays audio; the echo would
  *                        otherwise steer the estimate towards the speaker. The
  *                        estimate stays gated for DOA_PLAYBACK_HANGOVER_FRAMES
@@ -76,5 +86,9 @@ const doa_result_t *doa_process(doa_state_t *state,
                                 const int32_t *mics,
                                 int playback_active);
 
-/* Exposed for unit tests. */
-void doa_fft(doa_complex_t *data, unsigned n, const doa_complex_t *twiddle, int inverse);
+/**
+ * Exposed for unit tests: the correlation of a band-limited cross spectrum,
+ * corr[DOA_CORR_HALF + l] = sum over band bins k of Re(cross[k] e^(j 2 pi k l / DOA_IFFT_N))
+ * for l in -DOA_CORR_HALF..DOA_CORR_HALF.
+ */
+void doa_correlate(const doa_state_t *state, const doa_complex_t *cross, float *corr);

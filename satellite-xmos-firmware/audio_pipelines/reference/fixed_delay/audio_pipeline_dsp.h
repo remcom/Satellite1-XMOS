@@ -4,11 +4,12 @@
 #ifndef AUDIO_PIPELINE_DSP_H_
 #define AUDIO_PIPELINE_DSP_H_
 
+#include <stddef.h>
 #include <stdint.h>
 #include "FreeRTOS.h"
 #include "stream_buffer.h"
 #include "app_conf.h"
-#include <stdint.h>
+#include "audio/stage_stats.h"
 
 /* Pipeline config */
 #define AP_MAX_Y_CHANNELS (2)
@@ -45,21 +46,31 @@
 typedef struct {
     /* Channels being processed. After the AGC stage samples[0] is the final output. */
     int32_t samples[appconfAUDIO_PIPELINE_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
-    /*
-     * The speaker reference until the AEC has run. Afterwards reused:
-     *   [0] AEC+IC output (appconfAUDIO_PIPELINE_STORE_IC_AUDIO)
-     *   [1] AEC+IC+NS output (appconfAUDIO_PIPELINE_STORE_NS_AUDIO)
-     */
-    int32_t aec_reference_audio_samples[appconfAUDIO_PIPELINE_REF_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
-    /* The two mic front end channels, before AEC and gain */
-    int32_t mic_samples_passthrough[appconfAUDIO_PIPELINE_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
 
     /* Below is additional context needed by other stages on a per frame basis */
     int32_t vnr_pred_flag;
     float_s32_t max_ref_energy;
     float_s32_t aec_corr_factor;
-    int32_t ref_active_flag;
+    /* Tile 1 stage stats, passed on to tile 0 where the stats servicer reads them */
+    stage_stats_t1_report_t t1_stats;
+
+    /*
+     * The speaker reference until the AEC has run. Afterwards reused:
+     *   [0] AEC+IC output (appconfAUDIO_PIPELINE_STORE_IC_AUDIO)
+     *   [1] AEC+IC+NS output (appconfAUDIO_PIPELINE_STORE_NS_AUDIO)
+     * Last in the frame, so tile 1 can leave it out when tile 0 does not read it.
+     */
+    int32_t DWORD_ALIGNED aec_reference_audio_samples[appconfAUDIO_PIPELINE_REF_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
 } frame_data_t;
+
+/*
+ * Tile 0 outputs aec_reference_audio_samples[1] as its right channel. Only
+ * when the NS stage does not overwrite it (the bypass build) is the reference
+ * itself needed there; otherwise tile 1 sends the frame without it.
+ */
+#define AP_FRAME_SENDS_REF  (appconfAUDIO_PIPELINE_SKIP_NS || !appconfAUDIO_PIPELINE_STORE_NS_AUDIO)
+#define AP_FRAME_TX_BYTES   (AP_FRAME_SENDS_REF ? sizeof(frame_data_t) \
+                                                : offsetof(frame_data_t, aec_reference_audio_samples))
 
 typedef struct stage_delay_ctx {
     StreamBufferHandle_t delay_buf;
