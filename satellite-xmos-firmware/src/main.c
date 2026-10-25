@@ -31,6 +31,7 @@
 #include "stats_servicer/stats_servicer.h"
 #include "audio/audio_ctrl.h"
 #include "audio/stage_stats.h"
+#include "audio/voice_src.h"
 
 
 /* Config headers for sw_pll */
@@ -104,18 +105,13 @@ void speaker_pipeline_output(void *output_app_data,
 
     // down sample reference signal to 16kHz if needed 
     if (appconfI2S_AUDIO_SAMPLE_RATE == 3*appconfAUDIO_PIPELINE_SAMPLE_RATE) {
-        static int64_t sum[2];
-        static int32_t src_data[2][SRC_FF3V_FIR_NUM_PHASES][SRC_FF3V_FIR_TAPS_PER_PHASE] __attribute__((aligned (8)));
-        
+        static voice_src_ds3_t src_state[2];
+
         for( int frame=0; frame < frame_count; frame +=3 ){
-            sum[0] = src_ds3_voice_add_sample(0, src_data[0][0], src_ff3v_fir_coefs[0], tmp[frame][0][0]);
-            sum[1] = src_ds3_voice_add_sample(0, src_data[1][0], src_ff3v_fir_coefs[0], tmp[frame][0][1]);
-
-            sum[0] = src_ds3_voice_add_sample(sum[0], src_data[0][1], src_ff3v_fir_coefs[1], tmp[frame+1][0][0]);
-            sum[1] = src_ds3_voice_add_sample(sum[1], src_data[1][1], src_ff3v_fir_coefs[1], tmp[frame+1][0][1]);
-
-            ref.samples[frame/3][0] = src_ds3_voice_add_final_sample(sum[0], src_data[0][2], src_ff3v_fir_coefs[2], tmp[frame+2][0][0]);
-            ref.samples[frame/3][1] = src_ds3_voice_add_final_sample(sum[1], src_data[1][2], src_ff3v_fir_coefs[2], tmp[frame+2][0][1]);
+            for (int ch = 0; ch < appconfAUDIO_PIPELINE_REF_CHANNELS; ch++) {
+                const int32_t in[3] = { tmp[frame][0][ch], tmp[frame+1][0][ch], tmp[frame+2][0][ch] };
+                ref.samples[frame/3][ch] = voice_src_ds3(&src_state[ch], in);
+            }
         }
     } else {
       memcpy( ref.samples, tmp, sizeof(ref.samples) );
@@ -201,14 +197,15 @@ void audio_pipeline_output(void *output_app_data,
     const uint32_t src_start = stage_stats_start();
     if (appconfI2S_AUDIO_SAMPLE_RATE == 3*appconfAUDIO_PIPELINE_SAMPLE_RATE) {
         /* Up sample to 48kHz. A plain sample repeat would leave images above 8 kHz and droop the top of the band. */
-        static int32_t src_data[2][SRC_FF3V_FIR_TAPS_PER_PHASE] __attribute__((aligned (8)));
+        static voice_src_us3_t src_state[2];
 
         for( int in_frame=0, out_frame=0; in_frame < frame_count; in_frame++, out_frame += 3 ){
-            tmp[out_frame][0][0] = src_us3_voice_input_sample(src_data[0], src_ff3v_fir_coefs[2], left[in_frame]);
-            tmp[out_frame][0][1] = src_us3_voice_input_sample(src_data[1], src_ff3v_fir_coefs[2], right[in_frame]);
-            for (int k = 1; k < SRC_FF3V_FIR_NUM_PHASES; k++) {
-                tmp[out_frame + k][0][0] = src_us3_voice_get_next_sample(src_data[0], src_ff3v_fir_coefs[2 - k]);
-                tmp[out_frame + k][0][1] = src_us3_voice_get_next_sample(src_data[1], src_ff3v_fir_coefs[2 - k]);
+            int32_t out[2][3];
+            voice_src_us3(&src_state[0], left[in_frame], out[0]);
+            voice_src_us3(&src_state[1], right[in_frame], out[1]);
+            for (int k = 0; k < 3; k++) {
+                tmp[out_frame + k][0][0] = out[0][k];
+                tmp[out_frame + k][0][1] = out[1][k];
             }
         }
     } else {
@@ -344,6 +341,7 @@ void startup_task(void *arg)
 {
     rtos_printf("Startup task running from tile %d on core %d\n", THIS_XCORE_TILE, portGET_CORE_ID());
     stage_stats_init();
+    voice_src_init();
     platform_start();
 
 #if ON_TILE(MICARRAY_TILE_NO)

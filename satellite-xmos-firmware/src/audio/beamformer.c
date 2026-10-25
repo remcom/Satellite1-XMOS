@@ -1,6 +1,8 @@
 #include <math.h>
 #include <string.h>
 
+#include "xmath/xmath.h"
+
 #include "audio/beamformer.h"
 #include "audio/mic_frontend.h"
 
@@ -96,17 +98,13 @@ static void beam_sample(const beam_weights_t *w, const int32_t *const x[BEAM_MIC
     int64_t sum = 0;
     int64_t diff = 0;
     for (unsigned m = 0; m < BEAM_MIC_COUNT; m++) {
-        const int32_t *xm = x[m];
-        const int32_t *h = w->delay_q30[m];
-        int64_t acc = 0;
-        for (unsigned k = 0; k < BEAM_TAPS; k++) {
-            acc += (int64_t)xm[k] * h[k];
-        }
         /*
-         * The taps add up to at most 2.2 in absolute value, so neither acc nor
-         * the blocking sum below (weights up to 1.42 in total) can overflow.
+         * Fractional delay on the VPU: sum of x * h * 2^-30, each product
+         * rounded. The taps add up to at most 2.2 in absolute value, so neither
+         * the 40-bit lane accumulators (3 products each) nor the blocking sum
+         * below (weights up to 1.42 in total) can overflow.
          */
-        const int64_t aligned = acc >> 30;
+        const int64_t aligned = vect_s32_dot(x[m], w->delay_q30[m], BEAM_TAPS, 0, 0);
         sum += aligned;
         diff += aligned * w->block_q30[m];
     }
