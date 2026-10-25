@@ -61,7 +61,6 @@ static void *audio_pipeline_input_i(void *input_app_data)
     frame_data_t *frame_data = frame_pool_get(&frame_pool);
     /* The samples and the reference are overwritten below and by the front end */
     frame_data->vnr_pred_flag = 0;
-    frame_data->max_ref_energy = (float_s32_t){0, 0};
     frame_data->aec_corr_factor = (float_s32_t){0, 0};
 
     audio_pipeline_input(input_app_data,
@@ -86,10 +85,16 @@ static int audio_pipeline_output_i(frame_data_t *frame_data,
     return AUDIO_PIPELINE_DONT_FREE_FRAME;
 }
 
-static int playback_active(const frame_data_t *frame_data)
+/*
+ * One pass over the reference gives both the playback gate for the DOA and
+ * the AEC reference power the AGC reads (as aec_calc_max_input_energy()).
+ */
+static int playback_active(frame_data_t *frame_data)
 {
-    const float energy = audio_mean_square_s32(&frame_data->aec_reference_audio_samples[0][0],
-                                               appconfAUDIO_PIPELINE_REF_CHANNELS * appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+    const float energy = audio_block_energies_s32(&frame_data->aec_reference_audio_samples[0][0],
+                                                  appconfAUDIO_PIPELINE_REF_CHANNELS,
+                                                  appconfAUDIO_PIPELINE_FRAME_ADVANCE,
+                                                  &frame_data->max_ref_energy);
     return energy > AP_PLAYBACK_ENERGY_THRESHOLD;
 }
 
@@ -172,21 +177,25 @@ static void stage_aec(frame_data_t *frame_data)
 {
     const uint32_t start = stage_stats_start();
 #if !appconfAUDIO_PIPELINE_SKIP_AEC
-    int32_t DWORD_ALIGNED stage1_output[AEC_MAX_Y_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
-
+    /*
+     * In place: aec_frame_init() copies the mics into the AEC state before any
+     * output is written. max_ref_energy was set by stage_frontend().
+     */
     aec_process_frame_1thread(
             &aec_state.aec_main_state,
             &aec_state.aec_shadow_state,
-            stage1_output,
-            NULL,
             frame_data->samples,
+            NULL,
+            (const int32_t (*)[AEC_FRAME_ADVANCE])frame_data->samples,
             frame_data->aec_reference_audio_samples);
 
+#if (appconfINPUT_SAMPLES_MIC_DELAY_MS < 0) && !appconfAUDIO_PIPELINE_SKIP_STATIC_DELAY
+    /* stage_delay() delayed the reference after stage_frontend() measured it */
     frame_data->max_ref_energy = aec_calc_max_input_energy(
                                     frame_data->aec_reference_audio_samples,
                                     aec_state.aec_main_state.shared_state->num_x_channels);
+#endif
     frame_data->aec_corr_factor = aec_calc_corr_factor(&aec_state.aec_main_state, 0);
-    memcpy(frame_data->samples, stage1_output, AEC_MAX_Y_CHANNELS * appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));
 #endif
 
     /*

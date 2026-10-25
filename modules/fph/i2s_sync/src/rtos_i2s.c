@@ -74,16 +74,16 @@ static void i2s_receive(rtos_i2s_t *ctx, size_t num_in, const int32_t *i2s_sampl
          * even if more sample spaces are actually free
          */
         size_t sample_spaces_free = MIN(words_free, ctx->recv_buffer.buf_size - ctx->recv_buffer.write_index);
-        buffer_words_written = ctx->receive_filter_cb(ctx, ctx->send_filter_app_data, (int32_t *)i2s_sample_buf, num_in, &ctx->recv_buffer.buf[ctx->recv_buffer.write_index], sample_spaces_free);
+        buffer_words_written = ctx->receive_filter_cb(ctx, ctx->receive_filter_app_data, (int32_t *)i2s_sample_buf, num_in, &ctx->recv_buffer.buf[ctx->recv_buffer.write_index], sample_spaces_free);
     }
 
     if (buffer_words_written > 0) {
-        ctx->recv_buffer.write_index += num_in;
+        ctx->recv_buffer.write_index += buffer_words_written;
         if (ctx->recv_buffer.write_index >= ctx->recv_buffer.buf_size) {
             ctx->recv_buffer.write_index = 0;
         }
         RTOS_MEMORY_BARRIER();
-        ctx->recv_buffer.total_written += num_in;
+        ctx->recv_buffer.total_written += buffer_words_written;
     }
 
     if (ctx->recv_buffer.required_available_count > 0) {
@@ -114,7 +114,9 @@ static void i2s_send(rtos_i2s_t *ctx, size_t num_out, int32_t *i2s_sample_buf)
             memcpy(i2s_sample_buf, &ctx->send_buffer.buf[ctx->send_buffer.read_index], 2 * sizeof(int32_t));
             buffer_words_read = 2;
         } else {
-            // rtos_printf("i2s tx underrun\n");
+            /* lib_i2s reuses this buffer: without clearing it the last sample would repeat */
+            i2s_sample_buf[0] = 0;
+            i2s_sample_buf[1] = 0;
         }
     } else {
         /*
@@ -153,7 +155,8 @@ static void i2s_send(rtos_i2s_t *ctx, size_t num_out, int32_t *i2s_sample_buf)
             memcpy(i2s_sample_buf + 2, &ctx->send_buffer_1.buf[ctx->send_buffer_1.read_index], 2 * sizeof(int32_t));
             buffer_words_read_1 = 2;
         } else {
-            // rtos_printf("i2s tx underrun\n");
+            i2s_sample_buf[2] = 0;
+            i2s_sample_buf[3] = 0;
         }
 
         if (buffer_words_read_1 > 0) {

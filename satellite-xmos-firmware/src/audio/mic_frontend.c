@@ -271,3 +271,22 @@ float audio_mean_square_s32(const int32_t *samples, size_t count)
     }
     return sum / (float)count;
 }
+
+float audio_block_energies_s32(const int32_t *samples, size_t channels, size_t count,
+                               float_s32_t *max_energy)
+{
+    float sum = 0.0f;
+    *max_energy = (float_s32_t){0, 0};
+    for (size_t ch = 0; ch < channels; ch++) {
+        bfp_s32_t block;
+        /* Q31 input, as in aec_calc_max_input_energy() */
+        bfp_s32_init(&block, (int32_t *)&samples[ch * count], -31, count, 1);
+        const float_s64_t e = bfp_s32_energy(&block);
+        const float_s32_t e32 = float_s64_to_float_s32(e);
+        if (ch == 0 || float_s32_gt(e32, *max_energy)) {
+            *max_energy = e32;
+        }
+        sum += ldexpf((float)e.mant, e.exp);
+    }
+    return (channels * count > 0) ? sum / (float)(channels * count) : 0.0f;
+}

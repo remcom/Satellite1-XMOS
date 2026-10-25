@@ -11,6 +11,8 @@
 #define appconfGPIO_T0_RPC_PORT        1
 #define appconfGPIO_T1_RPC_PORT        2
 #define appconfAUDIOPIPELINE_PORT      7
+/* Pipeline output to the I2S tile, see audio_output_task() */
+#define appconfAUDIO_OUTPUT_PORT       8
 
 
 /* Application tile specifiers */
@@ -127,6 +129,9 @@
 #endif
 
 #include "app_conf_check.h"
+
+/* Tile running audio_pipeline_output() (the last pipeline stages) */
+#define appconfAUDIO_PIPELINE_OUTPUT_TILE_NO      0
 
 /* Task Priorities */
 #define appconfSTARTUP_TASK_PRIORITY              (configMAX_PRIORITIES/2 + 5)

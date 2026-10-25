@@ -90,7 +90,12 @@
 #endif /* appconfSPI_TASK_PRIORITY */
 
 #ifndef appconfDEVICE_CONTROL_SPI_PRIORITY
-#define appconfDEVICE_CONTROL_SPI_PRIORITY      (configMAX_PRIORITIES-2)
+/*
+ * Device control servicers (DFU, LED ring, audio, stats, GPIO at one less)
+ * run below the audio pipeline (configMAX_PRIORITIES/2), so a burst of
+ * commands or a DFU write cannot take a core from a pipeline stage.
+ */
+#define appconfDEVICE_CONTROL_SPI_PRIORITY      (configMAX_PRIORITIES/2 - 1)
 #endif // appconfDEVICE_CONTROL_SPI_PRIORITY
 
 
