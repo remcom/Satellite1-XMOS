@@ -12,8 +12,15 @@
  *   - target:   their mean (delay-and-sum), passes the steered direction
  *               undistorted
  *   - blocking: sum of cos(mic azimuth - steering) / 2 * aligned mic. The
- *               weights sum to zero, so the steered direction cancels. On the
- *               7.1 cm ring this is a cardioid facing away from the talker.
+ *               weights sum to zero, so the steered direction cancels. Other
+ *               directions come through high-passed: a source behind the
+ *               device is ~12 dB below a single mic at 200 Hz and about level
+ *               with it from 1 kHz. Below ~1 kHz the pattern is a cardioid
+ *               facing away from the talker. Above ~2.5 kHz the 7.1 cm ring
+ *               aliases and the pattern has deep nulls at rear directions
+ *               that move with the steering (behind the device at 3.2 kHz
+ *               when steered at 30 degrees), where the IC gets no noise
+ *               reference.
  *
  * The IC stage uses the blocking beam as its noise reference and so becomes
  * the adaptive half of the GSC.
@@ -46,6 +53,12 @@ typedef struct {
 void beamformer_init(beamformer_t *bf, unsigned azimuth_deg);
 
 /**
+ * Points both beams at azimuth_deg at once, without a crossfade. The filter
+ * history is kept.
+ */
+void beamformer_point(beamformer_t *bf, unsigned azimuth_deg);
+
+/**
  * Steers both beams towards azimuth_deg. The next beamformer_process() call
  * crossfades from the previous beams over its frame.
  */
@@ -59,3 +72,13 @@ void beamformer_process(beamformer_t *bf,
                         const int32_t *raw,
                         int32_t *out,
                         size_t frame_count);
+
+/**
+ * Takes a frame into the filter history without forming the beams, so a
+ * later beamformer_process() starts without a glitch.
+ *
+ * \param raw   as for beamformer_process()
+ */
+void beamformer_feed(beamformer_t *bf,
+                     const int32_t *raw,
+                     size_t frame_count);

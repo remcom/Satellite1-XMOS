@@ -49,6 +49,13 @@ typedef enum {
  * re-steers, and so re-adapts the AEC and IC, more often.
  */
 #define MIC_FRONTEND_BEAM_HOLD_DEG          15
+/*
+ * BEAM: the DOA results outside the hold angle must agree at least this well
+ * (length of the mean of their unit vectors, 1 = all equal) to steer to their
+ * mean; otherwise they are dropped. Two talkers taking turns would put the
+ * mean between them. 0.8 still accepts two DOA outcomes ~70 degrees apart.
+ */
+#define MIC_FRONTEND_BEAM_MIN_CLUSTER       0.8f
 /* BEAM: steering direction until the DOA moves it */
 #define MIC_FRONTEND_BEAM_INITIAL_DEG       0
 /* mic_frontend_get_beam_azimuth() outside MIC_MODE_BEAM */
@@ -57,6 +64,7 @@ typedef enum {
 typedef struct {
     uint8_t ch0;                 /* mic_idx_t feeding channel 0 (the IC target) */
     uint8_t ch1;                 /* mic_idx_t feeding channel 1 */
+    uint8_t mode;                /* mic_mode_t of the last update, to spot entering BEAM */
     uint8_t candidate;           /* AUTO_PAIR: mic the DOA currently points at */
     uint32_t candidate_frames;   /* AUTO_PAIR: speech frames the candidate held */
     uint32_t frames_since_switch;
@@ -72,13 +80,18 @@ void mic_frontend_init(mic_frontend_state_t *state);
  * Advances the AUTO_PAIR selection or the BEAM steering with this frame's DOA
  * result. Call once per frame before mic_frontend_process(); it has no effect
  * in the other modes.
+ *
+ * Entering BEAM points the beams at the DOA result straight away if it is
+ * valid, without a crossfade, and does not wait out the dwell of an earlier
+ * switch: the mode change makes the AEC and IC re-adapt anyway.
  */
 void mic_frontend_update(mic_frontend_state_t *state,
                          mic_mode_t mode,
                          const doa_result_t *doa);
 
 /**
- * Writes the two pipeline channels for the given mode.
+ * Writes the two pipeline channels for the given mode. Outside BEAM it still
+ * keeps the beamformer's filter history up to date.
  *
  * \param raw   MIC_FRONTEND_MIC_COUNT channels of frame_count samples
  * \param out   2 channels of frame_count samples

@@ -68,8 +68,14 @@ static void compute_weights(beam_weights_t *w, unsigned azimuth_deg)
 void beamformer_init(beamformer_t *bf, unsigned azimuth_deg)
 {
     memset(bf, 0, sizeof(*bf));
+    beamformer_point(bf, azimuth_deg);
+}
+
+void beamformer_point(beamformer_t *bf, unsigned azimuth_deg)
+{
     bf->azimuth_deg = (uint16_t)(azimuth_deg % 360);
     compute_weights(&bf->weights, bf->azimuth_deg);
+    bf->fade = 0;
 }
 
 void beamformer_steer(beamformer_t *bf, unsigned azimuth_deg)
@@ -145,11 +151,21 @@ void beamformer_process(beamformer_t *bf,
         }
     }
     bf->fade = 0;
+    beamformer_feed(bf, raw, frame_count);
+}
 
+void beamformer_feed(beamformer_t *bf,
+                     const int32_t *raw,
+                     size_t frame_count)
+{
     for (unsigned m = 0; m < BEAM_MIC_COUNT; m++) {
-        const int32_t *src = (frame_count >= BEAM_HISTORY)
-                           ? &raw[m * frame_count + frame_count - BEAM_HISTORY]
-                           : &head[m][frame_count];
-        memcpy(bf->tail[m], src, sizeof(bf->tail[m]));
+        const int32_t *frame = &raw[m * frame_count];
+        if (frame_count >= BEAM_HISTORY) {
+            memcpy(bf->tail[m], &frame[frame_count - BEAM_HISTORY], sizeof(bf->tail[m]));
+        } else {
+            const size_t keep = BEAM_HISTORY - frame_count;
+            memmove(bf->tail[m], &bf->tail[m][frame_count], keep * sizeof(int32_t));
+            memcpy(&bf->tail[m][keep], frame, frame_count * sizeof(int32_t));
+        }
     }
 }
