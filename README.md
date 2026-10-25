@@ -22,6 +22,19 @@ mic gain and the direction of arrival are accessible through the audio servicer
 | `MIC_MODE_PAIR_NS` | `1` | North, South |
 | `MIC_MODE_AVERAGE` | `2` | (North+East)/2, (South+West)/2 |
 | `MIC_MODE_AUTO_PAIR` | `3` | The mic facing the talker (from the DOA estimate) and the mic opposite it |
+| `MIC_MODE_BEAM` | `4` | A beam at the talker (from the DOA estimate) and a blocking beam that cancels the talker |
+
+`MIC_MODE_BEAM` turns the AEC/IC stages into a generalized sidelobe canceller. All
+four mics are time-aligned towards the talker. Channel 0 is their sum, so the talker
+passes undistorted. Channel 1 is a weighted difference that cancels the talker and
+hears the rest of the room, weakly below ~500 Hz and with gaps at some directions
+above ~2.5 kHz. The IC uses channel 1 as its noise reference, so it removes noise
+without a copy of the talker's speech to cancel. Entering the mode points the beams
+at the last DOA straight away. After that they re-steer to the mean DOA once the
+talker has been more than 15 degrees off them for ~0.5 s of speech, at most every
+~3 s, and only if those DOA results agree: two talkers taking turns leave the beams
+where they are. Each re-steer makes the AEC and IC re-adapt, as a pair switch does.
+See `src/audio/beamformer.h`.
 
 The mic gain (default 20 dB, range 0..30 dB) is applied after the AEC, so loud echo is
 not clipped before the AEC can cancel it.

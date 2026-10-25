@@ -9,6 +9,9 @@
 /* vect_s32_energy() cannot saturate its accumulators for blocks up to this length */
 #define ENERGY_BLOCK_MAX 1024
 
+#define MIC_FRONTEND_PI 3.14159265358979f
+#define ALL_MICS_MASK   ((uint8_t)((1u << MIC_FRONTEND_MIC_COUNT) - 1))
+
 static const uint8_t opposite_mic[MIC_FRONTEND_MIC_COUNT] = {
     [MIC_IDX_NORTH] = MIC_IDX_SOUTH,
     [MIC_IDX_SOUTH] = MIC_IDX_NORTH,
@@ -27,6 +30,8 @@ void mic_frontend_init(mic_frontend_state_t *state)
     state->ch0 = MIC_IDX_EAST;
     state->ch1 = MIC_IDX_WEST;
     state->candidate = MIC_IDX_EAST;
+    state->mode = MIC_MODE_COUNT;
+    beamformer_init(&state->beam, MIC_FRONTEND_BEAM_INITIAL_DEG);
 }
 
 static void set_pair(mic_frontend_state_t *state, uint8_t ch0)
@@ -37,12 +42,76 @@ static void set_pair(mic_frontend_state_t *state, uint8_t ch0)
     state->candidate_frames = 0;
 }
 
+static unsigned angle_between(unsigned a_deg, unsigned b_deg)
+{
+    const unsigned d = (a_deg > b_deg ? a_deg - b_deg : b_deg - a_deg) % 360;
+    return d > 180 ? 360 - d : d;
+}
+
+static void reset_beam_tracking(mic_frontend_state_t *state)
+{
+    state->beam_away_frames = 0;
+    state->beam_away_x = 0.0f;
+    state->beam_away_y = 0.0f;
+}
+
+static void enter_beam(mic_frontend_state_t *state, const doa_result_t *doa)
+{
+    if (doa->valid) {
+        beamformer_point(&state->beam, doa->azimuth_deg);
+    }
+    state->frames_since_switch = MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES;
+}
+
+/*
+ * Re-steers once the DOA has stayed outside the hold angle for long enough, to
+ * the mean of those DOA results: a talker between two DOA outcomes still gets
+ * a beam, and single outliers barely move it. Results spread too widely for
+ * their mean to mean anything are dropped instead.
+ */
+static void update_beam(mic_frontend_state_t *state, const doa_result_t *doa)
+{
+    if (!doa->updated) {
+        return;
+    }
+    if (angle_between(doa->azimuth_deg % 360, state->beam.azimuth_deg) <= MIC_FRONTEND_BEAM_HOLD_DEG) {
+        reset_beam_tracking(state);
+        return;
+    }
+
+    const float az = (float)doa->azimuth_deg * (MIC_FRONTEND_PI / 180.0f);
+    state->beam_away_x += cosf(az);
+    state->beam_away_y += sinf(az);
+    state->beam_away_frames++;
+
+    if (state->beam_away_frames >= MIC_FRONTEND_AUTO_STABLE_FRAMES &&
+        state->frames_since_switch >= MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES) {
+        const float spread_limit = MIC_FRONTEND_BEAM_MIN_CLUSTER * (float)state->beam_away_frames;
+        if (hypotf(state->beam_away_x, state->beam_away_y) < spread_limit) {
+            reset_beam_tracking(state);
+            return;
+        }
+        float mean = atan2f(state->beam_away_y, state->beam_away_x) * (180.0f / MIC_FRONTEND_PI);
+        if (mean < 0.0f) {
+            mean += 360.0f;
+        }
+        beamformer_steer(&state->beam, (unsigned)lrintf(mean) % 360);
+        reset_beam_tracking(state);
+        state->frames_since_switch = 0;
+    }
+}
+
 void mic_frontend_update(mic_frontend_state_t *state,
                          mic_mode_t mode,
                          const doa_result_t *doa)
 {
     if (state->frames_since_switch < MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES) {
         state->frames_since_switch++;
+    }
+    const int entering_beam = (mode == MIC_MODE_BEAM && state->mode != MIC_MODE_BEAM);
+    state->mode = (uint8_t)mode;
+    if (mode != MIC_MODE_BEAM) {
+        reset_beam_tracking(state);
     }
 
     switch (mode) {
@@ -55,6 +124,12 @@ void mic_frontend_update(mic_frontend_state_t *state,
         return;
     case MIC_MODE_AUTO_PAIR:
         break;
+    case MIC_MODE_BEAM:
+        if (entering_beam) {
+            enter_beam(state, doa);
+        }
+        update_beam(state, doa);
+        return;
     default:
         return;
     }
@@ -112,7 +187,7 @@ static void pair_for_mode(const mic_frontend_state_t *state, mic_mode_t mode,
     }
 }
 
-void mic_frontend_process(const mic_frontend_state_t *state,
+void mic_frontend_process(mic_frontend_state_t *state,
                           mic_mode_t mode,
                           const int32_t *raw,
                           int32_t *out,
@@ -120,6 +195,12 @@ void mic_frontend_process(const mic_frontend_state_t *state,
 {
     int32_t *out0 = &out[0];
     int32_t *out1 = &out[frame_count];
+
+    if (mode == MIC_MODE_BEAM) {
+        beamformer_process(&state->beam, raw, out, frame_count);
+        return;
+    }
+    beamformer_feed(&state->beam, raw, frame_count);
 
     if (mode == MIC_MODE_AVERAGE) {
         /*
@@ -155,11 +236,21 @@ void mic_frontend_get_masks(const mic_frontend_state_t *state,
         *ch1_mask = MIC_MASK(MIC_IDX_SOUTH) | MIC_MASK(MIC_IDX_WEST);
         return;
     }
+    if (mode == MIC_MODE_BEAM) {
+        *ch0_mask = ALL_MICS_MASK;
+        *ch1_mask = ALL_MICS_MASK;
+        return;
+    }
     uint8_t ch0;
     uint8_t ch1;
     pair_for_mode(state, mode, &ch0, &ch1);
     *ch0_mask = MIC_MASK(ch0);
     *ch1_mask = MIC_MASK(ch1);
+}
+
+uint16_t mic_frontend_get_beam_azimuth(const mic_frontend_state_t *state, mic_mode_t mode)
+{
+    return (mode == MIC_MODE_BEAM) ? state->beam.azimuth_deg : MIC_FRONTEND_NO_BEAM;
 }
 
 int32_t mic_gain_db_to_q16(unsigned gain_db)

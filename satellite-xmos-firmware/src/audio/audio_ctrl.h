@@ -25,7 +25,8 @@ int audio_ctrl_set_mic_mode(unsigned mode);
 mic_mode_t audio_ctrl_get_mic_mode(void);
 
 /** Called by the pipeline once per frame. */
-void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_mask);
+void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_mask,
+                        uint16_t beam_azimuth_deg);
 
 /** Latest DOA result. `updated` is always 0: a frame-long flag is too short
  *  for a polling reader, use audio_ctrl_get_doa_update_count() instead. */
@@ -34,3 +35,5 @@ doa_result_t audio_ctrl_get_doa(void);
  *  audio_ctrl_get_doa() so a changed count is never paired with an older result. */
 uint32_t audio_ctrl_get_doa_update_count(void);
 void audio_ctrl_get_mic_masks(uint8_t *ch0_mask, uint8_t *ch1_mask);
+/** Beam steering in degrees, MIC_FRONTEND_NO_BEAM outside MIC_MODE_BEAM. */
+uint16_t audio_ctrl_get_beam_azimuth(void);

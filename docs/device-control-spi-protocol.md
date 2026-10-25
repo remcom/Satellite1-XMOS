@@ -307,6 +307,7 @@ Commands:
 | `AUDIO_SERVICER_CMD_MIC_MODE` | `1` | Read/write | 1 byte | 2 bytes |
 | `AUDIO_SERVICER_CMD_DOA` | `2` | Read | 4 bytes | 5 bytes |
 | `AUDIO_SERVICER_CMD_MIC_PAIR` | `3` | Read | 2 bytes | 3 bytes |
+| `AUDIO_SERVICER_CMD_BEAM` | `4` | Read | 2 bytes | 3 bytes |
 
 Read responses start with the command status byte, like the other servicers:
 `[23, status, data...]` on the wire.
@@ -315,8 +316,10 @@ Read responses start with the command status byte, like the other servicers:
   Larger values are rejected with `SERVICER_WRONG_PAYLOAD`.
 - `MIC_MODE`: `0` East/West pair (default), `1` North/South pair,
   `2` average of (North, East) and (South, West), `3` automatic pair selection
-  from the DOA. Other values are rejected with `SERVICER_WRONG_PAYLOAD`.
-  Switching the pair makes the AEC and IC re-adapt briefly.
+  from the DOA, `4` DOA-steered beams (a beam at the talker, and a blocking
+  beam as the IC noise reference). Other values are rejected with
+  `SERVICER_WRONG_PAYLOAD`. Switching the pair or re-steering the beams makes
+  the AEC and IC re-adapt briefly.
 - `DOA`: azimuth in degrees as little-endian `uint16` (`0..359`, `0` = North
   mic, `90` = East mic), confidence (`0..255`), flags. Flag bit `0` is set
   while the result is valid (produced within the last ~0.5 s). Bit `1` is set
@@ -326,9 +329,12 @@ Read responses start with the command status byte, like the other servicers:
   for ~400 ms after playback stops so the speaker tail and room reverb do not
   steer it.
 - `MIC_PAIR`: bitmask of the mics feeding pipeline channel 0, then channel 1.
-  Bit `0` North, bit `1` South, bit `2` East, bit `3` West.
+  Bit `0` North, bit `1` South, bit `2` East, bit `3` West. Both are `0x0F` in
+  beam mode.
+- `BEAM`: beam steering azimuth in degrees as little-endian `uint16` (`0..359`,
+  same convention as `DOA`), or `0xFFFF` when the mic mode is not `4`.
 
-Writes to `DOA` and `MIC_PAIR` are rejected with `CONTROL_BAD_COMMAND`.
+Writes to `DOA`, `MIC_PAIR` and `BEAM` are rejected with `CONTROL_BAD_COMMAND`.
 
 Settings are not persisted; they return to the defaults on reset.
 
@@ -461,6 +467,8 @@ Image status flags:
   `DFU_CONTROLLER_SERVICER_RESID_DFU_GETIMAGESTATUS` (`91`).
 - Added the audio servicer (`230`): mic gain, mic mode, DOA and active mic
   pair. The device now waits for four servicers to register.
+- Added mic mode `4` (DOA-steered beams) and the additive audio servicer read
+  command `AUDIO_SERVICER_CMD_BEAM` (`4`).
 - Added additive LED ring command `LED_RING_SERVICER_CMD_DOA_INDICATOR` (`1`).
 - Added the stats servicer (`250`): audio stage processing times, stack and
   heap use. The device now waits for five servicers to register.

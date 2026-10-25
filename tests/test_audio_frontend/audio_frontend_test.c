@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audio/beamformer.h"
 #include "audio/doa.h"
 #include "audio/mic_frontend.h"
 
@@ -46,12 +47,20 @@ static double source(double t)
     return v / sqrt((double)NUM_TONES);
 }
 
+/* A single tone at tone_hz, for measurements per frequency. */
+static double tone_hz;
+static double tone(double t)
+{
+    return sin(2.0 * PI * tone_hz * t);
+}
+
 /*
- * Fills one frame for a plane wave from azimuth_deg (0 = North, 90 = East)
- * hitting mics on a ring of the given radius.
+ * Fills one frame for a plane wave of signal() from azimuth_deg (0 = North,
+ * 90 = East) hitting mics on a ring of the given radius.
  */
-static void make_frame(int32_t *mics, unsigned frame_index, double azimuth_deg,
-                       double radius, double amplitude, double noise)
+static void make_wave(int32_t *mics, unsigned frame_index, double azimuth_deg,
+                      double radius, double amplitude, double noise,
+                      double (*signal)(double))
 {
     /* mic positions (x = East, y = North), order N, S, E, W */
     const double pos[4][2] = { {0, radius}, {0, -radius}, {radius, 0}, {-radius, 0} };
@@ -64,11 +73,17 @@ static void make_frame(int32_t *mics, unsigned frame_index, double azimuth_deg,
         const double arrival = -(pos[m][0] * ux + pos[m][1] * uy) / SPEED_OF_SOUND;
         for (int i = 0; i < DOA_FRAME_SIZE; i++) {
             const double t = (double)(frame_index * DOA_FRAME_SIZE + i) / DOA_SAMPLE_RATE;
-            double v = amplitude * source(t - arrival);
+            double v = amplitude * signal(t - arrival);
             v += noise * (rng_uniform() - 0.5);
             mics[m * DOA_FRAME_SIZE + i] = (int32_t)(v * 2147483647.0);
         }
     }
+}
+
+static void make_frame(int32_t *mics, unsigned frame_index, double azimuth_deg,
+                       double radius, double amplitude, double noise)
+{
+    make_wave(mics, frame_index, azimuth_deg, radius, amplitude, noise, source);
 }
 
 static double angle_error(double a, double b)
@@ -315,6 +330,336 @@ static void test_average_resets_auto_pair(void)
           "AUTO_PAIR after AVERAGE starts from %u/%u, expected East/West", st.ch0, st.ch1);
 }
 
+typedef struct {
+    double reference;   /* the source at the ring centre, delayed like the beams */
+    double target;
+    double target_error;
+    double block;
+} beam_energy_t;
+
+static double db(double ratio)
+{
+    return 10.0 * log10(ratio);
+}
+
+/* A plane wave of signal() from source_deg through beams steered at steer_deg. */
+static beam_energy_t run_beam_signal(unsigned steer_deg, double source_deg, double (*signal)(double))
+{
+    static beamformer_t bf;
+    static int32_t mics[4 * DOA_FRAME_SIZE];
+    static int32_t out[2 * DOA_FRAME_SIZE];
+    const double amplitude = 0.1;
+    beamformer_init(&bf, steer_deg);
+    beam_energy_t e = {0};
+    for (unsigned frame = 0; frame < 6; frame++) {
+        make_wave(mics, frame, source_deg, BEAM_RING_RADIUS_M, amplitude, 0.0, signal);
+        beamformer_process(&bf, mics, out, DOA_FRAME_SIZE);
+        if (frame == 0) {
+            continue;   /* the filter history starts out silent */
+        }
+        for (int i = 0; i < DOA_FRAME_SIZE; i++) {
+            const double t = ((double)(frame * DOA_FRAME_SIZE + i) - BEAM_DELAY_SAMPLES) / DOA_SAMPLE_RATE;
+            const double ref = amplitude * signal(t);
+            const double target = out[i] / 2147483647.0;
+            const double block = out[DOA_FRAME_SIZE + i] / 2147483647.0;
+            e.reference += ref * ref;
+            e.target += target * target;
+            e.target_error += (target - ref) * (target - ref);
+            e.block += block * block;
+        }
+    }
+    return e;
+}
+
+static beam_energy_t run_beam(unsigned steer_deg, double source_deg)
+{
+    return run_beam_signal(steer_deg, source_deg, source);
+}
+
+static void test_beam_steered_direction(void)
+{
+    double worst_error = -INFINITY;
+    double worst_block = -INFINITY;
+    for (unsigned az = 0; az < 360; az += 15) {
+        const beam_energy_t e = run_beam(az, az);
+        /* the target beam passes the talker undistorted ... */
+        const double error = db(e.target_error / e.reference);
+        /* ... and the blocking beam cancels it */
+        const double block = db(e.block / e.reference);
+        worst_error = fmax(worst_error, error);
+        worst_block = fmax(worst_block, block);
+        CHECK(error < -40.0, "steered at %u deg: target error %.1f dB", az, error);
+        CHECK(block < -40.0, "steered at %u deg: talker leaks into the blocking beam at %.1f dB", az, block);
+    }
+    printf("beam on talker: worst target error %.1f dB, worst blocking leak %.1f dB\n",
+           worst_error, worst_block);
+}
+
+static void test_beam_blocks_only_the_talker(void)
+{
+    for (unsigned az = 0; az < 360; az += 45) {
+        const beam_energy_t behind = run_beam(az, az + 180.0);
+        const beam_energy_t side = run_beam(az, az + 90.0);
+        const beam_energy_t off = run_beam(az, az + MIC_FRONTEND_BEAM_HOLD_DEG);
+        /* the noise reference hears everything except the steered direction */
+        CHECK(db(behind.block / behind.reference) > -3.0, "steered at %u deg: source behind at %.1f dB",
+              az, db(behind.block / behind.reference));
+        CHECK(db(side.block / side.reference) > -9.0, "steered at %u deg: source at the side at %.1f dB",
+              az, db(side.block / side.reference));
+        const double off_rel = db(off.block / behind.block);
+        CHECK(off_rel < -22.0, "steered at %u deg: talker %d deg off reaches the blocking beam at %.1f dB",
+              az, MIC_FRONTEND_BEAM_HOLD_DEG, off_rel);
+        if (az == 0) {
+            printf("blocking beam: behind %.1f dB, side %.1f dB, %d deg off %.1f dB below behind\n",
+                   db(behind.block / behind.reference), db(side.block / side.reference),
+                   MIC_FRONTEND_BEAM_HOLD_DEG, off_rel);
+        }
+    }
+}
+
+/*
+ * Blocking beam gain for a source at source_deg with the beams steered at
+ * steer_deg, relative to a single mic, for ideally aligned mics on the ring.
+ */
+static double ideal_block_db(double freq_hz, double steer_deg, double source_deg)
+{
+    const double mic_deg[4] = { 0, 180, 90, 270 };
+    const double k = 2.0 * PI * freq_hz * BEAM_RING_RADIUS_M / SPEED_OF_SOUND;
+    double re = 0.0;
+    double im = 0.0;
+    for (int m = 0; m < 4; m++) {
+        const double steer = (mic_deg[m] - steer_deg) * PI / 180.0;
+        const double w = 0.5 * cos(steer);
+        const double phase = k * (cos((mic_deg[m] - source_deg) * PI / 180.0) - cos(steer));
+        re += w * cos(phase);
+        im += w * sin(phase);
+    }
+    return db(re * re + im * im);
+}
+
+static void test_beam_block_bands(void)
+{
+    /* periods that divide the 1200 measured samples */
+    const double freqs[] = { 200, 400, 1000, 2000, 3200, 4000 };
+    const double offsets[] = { MIC_FRONTEND_BEAM_HOLD_DEG, 90.0, 180.0 };
+    const unsigned steers[] = { 0, 30 };
+    for (unsigned s = 0; s < sizeof(steers) / sizeof(steers[0]); s++) {
+        const unsigned steer = steers[s];
+        printf("blocking beam steered at %u deg, dB vs one mic: Hz, %d deg off, side, behind\n",
+               steer, MIC_FRONTEND_BEAM_HOLD_DEG);
+        for (unsigned f = 0; f < sizeof(freqs) / sizeof(freqs[0]); f++) {
+            tone_hz = freqs[f];
+            const beam_energy_t on = run_beam_signal(steer, steer, tone);
+            const double on_db = db(on.block / on.reference);
+            /* the talker cancels in every band ... */
+            CHECK(on_db < -40.0, "%u deg, %.0f Hz: talker leaks into the blocking beam at %.1f dB",
+                  steer, tone_hz, on_db);
+
+            /* ... and other directions follow the response described in beamformer.h */
+            printf("  %4.0f:", tone_hz);
+            for (unsigned o = 0; o < sizeof(offsets) / sizeof(offsets[0]); o++) {
+                const beam_energy_t e = run_beam_signal(steer, steer + offsets[o], tone);
+                const double got = db(e.block / e.reference);
+                const double ideal = ideal_block_db(tone_hz, steer, steer + offsets[o]);
+                printf(" %6.1f", got);
+                /* deep nulls only need to be deep: there the fractional delays set the depth */
+                CHECK(fabs(got - ideal) < 1.0 || (got < -20.0 && ideal < -20.0),
+                      "%u deg, %.0f Hz: source %.0f deg off at %.1f dB, ideal %.1f dB",
+                      steer, tone_hz, offsets[o], got, ideal);
+            }
+            printf("\n");
+        }
+    }
+}
+
+static void test_beam_crossfade(void)
+{
+    static beamformer_t steered;
+    static beamformer_t old_beam;
+    static beamformer_t new_beam;
+    static int32_t mics[4 * DOA_FRAME_SIZE];
+    static int32_t out[2 * DOA_FRAME_SIZE];
+    static int32_t out_old[2 * DOA_FRAME_SIZE];
+    static int32_t out_new[2 * DOA_FRAME_SIZE];
+    beamformer_init(&steered, 0);
+    beamformer_init(&old_beam, 0);
+    beamformer_init(&new_beam, 120);
+
+    for (unsigned frame = 0; frame < 4; frame++) {
+        make_frame(mics, frame, 60, BEAM_RING_RADIUS_M, 0.1, 1e-3);
+        if (frame == 2) {
+            beamformer_steer(&steered, 120);
+        }
+        beamformer_process(&steered, mics, out, DOA_FRAME_SIZE);
+        beamformer_process(&old_beam, mics, out_old, DOA_FRAME_SIZE);
+        beamformer_process(&new_beam, mics, out_new, DOA_FRAME_SIZE);
+
+        if (frame < 2) {
+            CHECK(memcmp(out, out_old, sizeof(out)) == 0, "frame %u changed before the steer", frame);
+        } else if (frame == 2) {
+            /* fades from the old beams at the start to the new ones at the end */
+            for (int c = 0; c < 2; c++) {
+                const int32_t *o = &out[c * DOA_FRAME_SIZE];
+                const int32_t *a = &out_old[c * DOA_FRAME_SIZE];
+                const int32_t *b = &out_new[c * DOA_FRAME_SIZE];
+                CHECK(abs(o[0] - a[0]) <= abs(b[0] - a[0]) / 100 + 1, "ch %d does not start from the old beam", c);
+                CHECK(o[DOA_FRAME_SIZE - 1] == b[DOA_FRAME_SIZE - 1], "ch %d does not end on the new beam", c);
+            }
+        } else {
+            CHECK(memcmp(out, out_new, sizeof(out)) == 0, "frame %u is not on the new beams", frame);
+        }
+    }
+    CHECK(steered.azimuth_deg == 120, "steering reads %u", steered.azimuth_deg);
+}
+
+static void test_beam_short_frames(void)
+{
+    /* the filter history works for frames shorter than the filter */
+    static beamformer_t whole;
+    static beamformer_t pieces;
+    static int32_t mics[4 * DOA_FRAME_SIZE];
+    static int32_t out[2 * DOA_FRAME_SIZE];
+    static int32_t piece_in[4 * 7];
+    static int32_t piece_out[2 * 7];
+    beamformer_init(&whole, 30);
+    beamformer_init(&pieces, 30);
+    int mismatches = 0;
+    for (unsigned frame = 0; frame < 2; frame++) {
+        make_frame(mics, frame, 200, BEAM_RING_RADIUS_M, 0.1, 1e-3);
+        beamformer_process(&whole, mics, out, DOA_FRAME_SIZE);
+        for (int start = 0; start < DOA_FRAME_SIZE; start += 7) {
+            const int n = (DOA_FRAME_SIZE - start < 7) ? DOA_FRAME_SIZE - start : 7;
+            for (int m = 0; m < 4; m++) {
+                memcpy(&piece_in[m * n], &mics[m * DOA_FRAME_SIZE + start], n * sizeof(int32_t));
+            }
+            beamformer_process(&pieces, piece_in, piece_out, n);
+            for (int i = 0; i < n; i++) {
+                mismatches += piece_out[i] != out[start + i];
+                mismatches += piece_out[n + i] != out[DOA_FRAME_SIZE + start + i];
+            }
+        }
+    }
+    CHECK(mismatches == 0, "%d samples differ between 7-sample and whole frames", mismatches);
+}
+
+static void feed_beam_doa(mic_frontend_state_t *st, unsigned azimuth_deg, unsigned frames)
+{
+    const doa_result_t doa = { .azimuth_deg = (uint16_t)azimuth_deg, .confidence = 200, .valid = 1, .updated = 1 };
+    for (unsigned i = 0; i < frames; i++) {
+        mic_frontend_update(st, MIC_MODE_BEAM, &doa);
+    }
+}
+
+static void test_beam_steering(void)
+{
+    mic_frontend_state_t st;
+    mic_frontend_init(&st);
+    const doa_result_t none = {0};
+
+    CHECK(mic_frontend_get_beam_azimuth(&st, MIC_MODE_PAIR_EW) == MIC_FRONTEND_NO_BEAM,
+          "beam azimuth outside beam mode");
+    CHECK(mic_frontend_get_beam_azimuth(&st, MIC_MODE_BEAM) == MIC_FRONTEND_BEAM_INITIAL_DEG,
+          "initial beam azimuth %u", mic_frontend_get_beam_azimuth(&st, MIC_MODE_BEAM));
+    uint8_t m0;
+    uint8_t m1;
+    mic_frontend_get_masks(&st, MIC_MODE_BEAM, &m0, &m1);
+    CHECK(m0 == 0x0F && m1 == 0x0F, "beam masks %x %x", m0, m1);
+
+    /* entering the mode points the beams at the DOA at once */
+    feed_beam_doa(&st, 100, 1);
+    CHECK(st.beam.azimuth_deg == 100, "entered the beam mode at %u, expected 100", st.beam.azimuth_deg);
+    CHECK(!st.beam.fade, "entering the beam mode must not crossfade");
+
+    /* the DOA must stay away for the stable time; results near the beam restart the count */
+    feed_beam_doa(&st, 200, MIC_FRONTEND_AUTO_STABLE_FRAMES - 1);
+    feed_beam_doa(&st, 100 + MIC_FRONTEND_BEAM_HOLD_DEG, 1);
+    feed_beam_doa(&st, 200, MIC_FRONTEND_AUTO_STABLE_FRAMES - 1);
+    CHECK(st.beam.azimuth_deg == 100, "steered before the DOA was stable");
+    feed_beam_doa(&st, 200, 1);
+    CHECK(st.beam.azimuth_deg == 200, "beam at %u, expected 200", st.beam.azimuth_deg);
+    CHECK(st.beam.fade, "a steer must crossfade");
+
+    /* no steering within the dwell time after a steer ... */
+    feed_beam_doa(&st, 300, MIC_FRONTEND_AUTO_STABLE_FRAMES + 5);
+    CHECK(st.beam.azimuth_deg == 200, "steered within the dwell time");
+    for (int i = 0; i < MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES; i++) {
+        mic_frontend_update(&st, MIC_MODE_BEAM, &none);
+    }
+    /* ... but a DOA that stayed away meanwhile moves the beam right after it */
+    feed_beam_doa(&st, 300, 1);
+    CHECK(st.beam.azimuth_deg == 300, "beam at %u, expected 300", st.beam.azimuth_deg);
+
+    /* a talker between two DOA outcomes gets the mean, across 0 degrees too */
+    for (int i = 0; i < MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES; i++) {
+        mic_frontend_update(&st, MIC_MODE_BEAM, &none);
+    }
+    for (int i = 0; i < MIC_FRONTEND_AUTO_STABLE_FRAMES; i++) {
+        feed_beam_doa(&st, (i & 1) ? 350 : 10, 1);
+    }
+    CHECK(st.beam.azimuth_deg == 0, "beam at %u, expected 0", st.beam.azimuth_deg);
+
+    /* two talkers taking turns: their mean points at neither, so the beam stays */
+    for (int i = 0; i < MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES; i++) {
+        mic_frontend_update(&st, MIC_MODE_BEAM, &none);
+    }
+    for (int i = 0; i < 3 * MIC_FRONTEND_AUTO_STABLE_FRAMES; i++) {
+        feed_beam_doa(&st, (i & 1) ? 260 : 100, 1);
+    }
+    CHECK(st.beam.azimuth_deg == 0, "two talkers moved the beam to %u", st.beam.azimuth_deg);
+    /* ... until one of them keeps talking */
+    feed_beam_doa(&st, 100, MIC_FRONTEND_AUTO_STABLE_FRAMES);
+    CHECK(st.beam.azimuth_deg == 100, "beam at %u, expected 100", st.beam.azimuth_deg);
+
+    /* DOA results within the hold angle never move it */
+    for (int i = 0; i < MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES; i++) {
+        mic_frontend_update(&st, MIC_MODE_BEAM, &none);
+    }
+    feed_beam_doa(&st, 100 - MIC_FRONTEND_BEAM_HOLD_DEG, 3 * MIC_FRONTEND_AUTO_STABLE_FRAMES);
+    CHECK(st.beam.azimuth_deg == 100, "moved within the hold angle to %u", st.beam.azimuth_deg);
+
+    /* other modes drop a half counted move; coming back without a DOA keeps the steering */
+    feed_beam_doa(&st, 180, MIC_FRONTEND_AUTO_STABLE_FRAMES - 1);
+    mic_frontend_update(&st, MIC_MODE_PAIR_EW, &none);
+    mic_frontend_update(&st, MIC_MODE_BEAM, &none);
+    feed_beam_doa(&st, 180, 1);
+    CHECK(st.beam.azimuth_deg == 100, "a mode change kept the count, beam at %u", st.beam.azimuth_deg);
+
+    /* coming back with a DOA points at it, also right after an AUTO_PAIR switch */
+    mic_frontend_update(&st, MIC_MODE_PAIR_EW, &none);
+    st.frames_since_switch = 0;
+    feed_beam_doa(&st, 250, 1);
+    CHECK(st.beam.azimuth_deg == 250, "re-entered at %u, expected 250", st.beam.azimuth_deg);
+    feed_beam_doa(&st, 40, MIC_FRONTEND_AUTO_STABLE_FRAMES);
+    CHECK(st.beam.azimuth_deg == 40, "the dwell of the earlier switch held the beam at %u", st.beam.azimuth_deg);
+}
+
+static void test_beam_mode_toggle(void)
+{
+    /* leaving and re-entering the beam mode gives the beams of a beamformer that ran throughout */
+    static mic_frontend_state_t st;
+    static beamformer_t throughout;
+    static int32_t mics[4 * DOA_FRAME_SIZE];
+    static int32_t out[2 * DOA_FRAME_SIZE];
+    static int32_t out_throughout[2 * DOA_FRAME_SIZE];
+    const doa_result_t doa = { .azimuth_deg = 30, .confidence = 200, .valid = 1, .updated = 1 };
+    const mic_mode_t modes[] = {
+        MIC_MODE_PAIR_EW, MIC_MODE_PAIR_EW, MIC_MODE_BEAM, MIC_MODE_BEAM,
+        MIC_MODE_PAIR_EW, MIC_MODE_BEAM, MIC_MODE_AVERAGE, MIC_MODE_BEAM,
+    };
+    mic_frontend_init(&st);
+    beamformer_init(&throughout, 30);
+    for (unsigned frame = 0; frame < sizeof(modes) / sizeof(modes[0]); frame++) {
+        make_frame(mics, frame, 30, BEAM_RING_RADIUS_M, 0.1, 1e-3);
+        mic_frontend_update(&st, modes[frame], &doa);
+        mic_frontend_process(&st, modes[frame], mics, out, DOA_FRAME_SIZE);
+        beamformer_process(&throughout, mics, out_throughout, DOA_FRAME_SIZE);
+        if (modes[frame] == MIC_MODE_BEAM) {
+            CHECK(memcmp(out, out_throughout, sizeof(out)) == 0,
+                  "frame %u differs from a beamformer that ran throughout", frame);
+        }
+    }
+}
+
 static void test_gain(void)
 {
     CHECK(mic_gain_db_to_q16(0) == 65536, "0 dB is %d", mic_gain_db_to_q16(0));
@@ -356,6 +701,13 @@ int main(void)
     test_fixed_pairs();
     test_auto_pair_switching();
     test_average_resets_auto_pair();
+    test_beam_steered_direction();
+    test_beam_blocks_only_the_talker();
+    test_beam_block_bands();
+    test_beam_crossfade();
+    test_beam_short_frames();
+    test_beam_steering();
+    test_beam_mode_toggle();
     test_gain();
 
     printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);

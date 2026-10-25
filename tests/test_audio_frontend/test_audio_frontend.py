@@ -44,6 +44,7 @@ def test_audio_frontend_host(tmp_path: Path):
             str(TEST_SRC),
             str(AUDIO_SRC / "doa.c"),
             str(AUDIO_SRC / "mic_frontend.c"),
+            str(AUDIO_SRC / "beamformer.c"),
             *(str(o) for o in xmath_objects),
             "-lm",
             "-o", str(binary),

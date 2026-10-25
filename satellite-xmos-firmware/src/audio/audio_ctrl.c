@@ -13,8 +13,8 @@ static volatile uint32_t mic_mode;
 static volatile uint32_t doa_word;
 /* Incremented after doa_word whenever the DOA produced a new result */
 static volatile uint32_t doa_update_count;
-/* ch0_mask[7:0] | ch1_mask[15:8] */
-static volatile uint32_t mic_masks_word;
+/* ch0_mask[7:0] | ch1_mask[15:8] | beam_azimuth[31:16] */
+static volatile uint32_t frontend_word;
 
 void audio_ctrl_init(unsigned gain_db, mic_mode_t mode)
 {
@@ -26,7 +26,8 @@ void audio_ctrl_init(unsigned gain_db, mic_mode_t mode)
     }
     doa_word = 0;
     doa_update_count = 0;
-    mic_masks_word = MIC_MASK(MIC_IDX_EAST) | (MIC_MASK(MIC_IDX_WEST) << 8);
+    frontend_word = MIC_MASK(MIC_IDX_EAST) | (MIC_MASK(MIC_IDX_WEST) << 8) |
+                    ((uint32_t)MIC_FRONTEND_NO_BEAM << 16);
 }
 
 int audio_ctrl_set_mic_gain_db(unsigned gain_db)
@@ -63,7 +64,8 @@ mic_mode_t audio_ctrl_get_mic_mode(void)
     return (mic_mode_t) mic_mode;
 }
 
-void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_mask)
+void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_mask,
+                        uint16_t beam_azimuth_deg)
 {
     doa_word = (uint32_t)doa->azimuth_deg |
                ((uint32_t)doa->confidence << 16) |
@@ -71,7 +73,8 @@ void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_m
     if (doa->updated) {
         doa_update_count = doa_update_count + 1;
     }
-    mic_masks_word = (uint32_t)ch0_mask | ((uint32_t)ch1_mask << 8);
+    frontend_word = (uint32_t)ch0_mask | ((uint32_t)ch1_mask << 8) |
+                    ((uint32_t)beam_azimuth_deg << 16);
 }
 
 doa_result_t audio_ctrl_get_doa(void)
@@ -92,7 +95,12 @@ uint32_t audio_ctrl_get_doa_update_count(void)
 
 void audio_ctrl_get_mic_masks(uint8_t *ch0_mask, uint8_t *ch1_mask)
 {
-    const uint32_t w = mic_masks_word;
+    const uint32_t w = frontend_word;
     *ch0_mask = (uint8_t)(w & 0xFF);
     *ch1_mask = (uint8_t)((w >> 8) & 0xFF);
+}
+
+uint16_t audio_ctrl_get_beam_azimuth(void)
+{
+    return (uint16_t)(frontend_word >> 16);
 }
