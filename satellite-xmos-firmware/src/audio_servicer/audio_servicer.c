@@ -20,6 +20,7 @@ static control_cmd_info_t audio_servicer_resid_cmd_map[] = {
     { AUDIO_SERVICER_CMD_MIC_MODE, 1, sizeof(uint8_t), CMD_READ_WRITE },
     { AUDIO_SERVICER_CMD_DOA,      4, sizeof(uint8_t), CMD_READ_ONLY  },
     { AUDIO_SERVICER_CMD_MIC_PAIR, 2, sizeof(uint8_t), CMD_READ_ONLY  },
+    { AUDIO_SERVICER_CMD_BEAM,     2, sizeof(uint8_t), CMD_READ_ONLY  },
 };
 
 //-----------------Servicer read write callback functions-----------------------//
@@ -69,6 +70,14 @@ static control_ret_t audio_servicer_read_cmd(control_resid_t resid, control_cmd_
     case AUDIO_SERVICER_CMD_MIC_PAIR:
         audio_ctrl_get_mic_masks(&payload_ptr[0], &payload_ptr[1]);
         break;
+
+    case AUDIO_SERVICER_CMD_BEAM:
+    {
+        const uint16_t azimuth = audio_ctrl_get_beam_azimuth();
+        payload_ptr[0] = (uint8_t)(azimuth & 0xFF);
+        payload_ptr[1] = (uint8_t)(azimuth >> 8);
+        break;
+    }
 
     default:
         ret = CONTROL_BAD_COMMAND;

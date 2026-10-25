@@ -111,7 +111,8 @@ static void stage_frontend(frame_data_t *frame_data)
     uint8_t ch0_mask;
     uint8_t ch1_mask;
     mic_frontend_get_masks(&mic_frontend_state, mode, &ch0_mask, &ch1_mask);
-    audio_ctrl_publish(doa, ch0_mask, ch1_mask);
+    audio_ctrl_publish(doa, ch0_mask, ch1_mask,
+                       mic_frontend_get_beam_azimuth(&mic_frontend_state, mode));
 }
 
 static void stage_delay(frame_data_t *frame_data)
