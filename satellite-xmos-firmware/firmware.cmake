@@ -39,6 +39,7 @@ set_source_files_properties(
     ${CMAKE_CURRENT_LIST_DIR}/src/audio/doa.c
     ${CMAKE_CURRENT_LIST_DIR}/src/audio/mic_frontend.c
     ${CMAKE_CURRENT_LIST_DIR}/src/audio/beamformer.c
+    ${CMAKE_CURRENT_LIST_DIR}/src/audio/voice_src.c
     PROPERTIES COMPILE_OPTIONS "-O2"
 )
 
