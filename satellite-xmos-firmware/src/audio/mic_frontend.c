@@ -30,6 +30,7 @@ void mic_frontend_init(mic_frontend_state_t *state)
     state->ch0 = MIC_IDX_EAST;
     state->ch1 = MIC_IDX_WEST;
     state->candidate = MIC_IDX_EAST;
+    state->mode = MIC_MODE_COUNT;
     beamformer_init(&state->beam, MIC_FRONTEND_BEAM_INITIAL_DEG);
 }
 
@@ -54,10 +55,19 @@ static void reset_beam_tracking(mic_frontend_state_t *state)
     state->beam_away_y = 0.0f;
 }
 
+static void enter_beam(mic_frontend_state_t *state, const doa_result_t *doa)
+{
+    if (doa->valid) {
+        beamformer_point(&state->beam, doa->azimuth_deg);
+    }
+    state->frames_since_switch = MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES;
+}
+
 /*
  * Re-steers once the DOA has stayed outside the hold angle for long enough, to
  * the mean of those DOA results: a talker between two DOA outcomes still gets
- * a beam, and single outliers barely move it.
+ * a beam, and single outliers barely move it. Results spread too widely for
+ * their mean to mean anything are dropped instead.
  */
 static void update_beam(mic_frontend_state_t *state, const doa_result_t *doa)
 {
@@ -76,6 +86,11 @@ static void update_beam(mic_frontend_state_t *state, const doa_result_t *doa)
 
     if (state->beam_away_frames >= MIC_FRONTEND_AUTO_STABLE_FRAMES &&
         state->frames_since_switch >= MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES) {
+        const float spread_limit = MIC_FRONTEND_BEAM_MIN_CLUSTER * (float)state->beam_away_frames;
+        if (hypotf(state->beam_away_x, state->beam_away_y) < spread_limit) {
+            reset_beam_tracking(state);
+            return;
+        }
         float mean = atan2f(state->beam_away_y, state->beam_away_x) * (180.0f / MIC_FRONTEND_PI);
         if (mean < 0.0f) {
             mean += 360.0f;
@@ -93,6 +108,8 @@ void mic_frontend_update(mic_frontend_state_t *state,
     if (state->frames_since_switch < MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES) {
         state->frames_since_switch++;
     }
+    const int entering_beam = (mode == MIC_MODE_BEAM && state->mode != MIC_MODE_BEAM);
+    state->mode = (uint8_t)mode;
     if (mode != MIC_MODE_BEAM) {
         reset_beam_tracking(state);
     }
@@ -108,6 +125,9 @@ void mic_frontend_update(mic_frontend_state_t *state,
     case MIC_MODE_AUTO_PAIR:
         break;
     case MIC_MODE_BEAM:
+        if (entering_beam) {
+            enter_beam(state, doa);
+        }
         update_beam(state, doa);
         return;
     default:
@@ -180,6 +200,7 @@ void mic_frontend_process(mic_frontend_state_t *state,
         beamformer_process(&state->beam, raw, out, frame_count);
         return;
     }
+    beamformer_feed(&state->beam, raw, frame_count);
 
     if (mode == MIC_MODE_AVERAGE) {
         /*
