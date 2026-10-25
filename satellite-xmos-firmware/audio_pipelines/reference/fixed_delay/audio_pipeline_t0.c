@@ -87,11 +87,14 @@ static void stage_vnr_and_ic(frame_data_t *frame_data)
     const uint32_t start = stage_stats_start();
 #if appconfAUDIO_PIPELINE_SKIP_IC_AND_VNR
 #else
-    int32_t DWORD_ALIGNED ic_output[appconfAUDIO_PIPELINE_FRAME_ADVANCE];
+    /*
+     * In place: ic_filter() is done with its y input once it has copied it into
+     * the IC state, before it writes the output (checked bit exact on xcore).
+     */
     ic_filter(&ic_stage_state.state,
               frame_data->samples[0],
               frame_data->samples[1],
-              ic_output);
+              frame_data->samples[0]);
 
     vnr_pred_state_t *vnr_pred_state = &vnr_pred_stage_state.vnr_pred_state;
     ic_calc_vnr_pred(&ic_stage_state.state, &vnr_pred_state->input_vnr_pred, &vnr_pred_state->output_vnr_pred);
@@ -102,9 +105,8 @@ static void stage_vnr_and_ic(frame_data_t *frame_data)
     ic_adapt(&ic_stage_state.state, vnr_pred_stage_state.vnr_pred_state.input_vnr_pred);
 
     /* Intentionally ignoring comms ch from here on out */
-    memcpy(frame_data->samples[0], ic_output, appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));
 #if appconfAUDIO_PIPELINE_STORE_IC_AUDIO    
-    memcpy(frame_data->aec_reference_audio_samples[0], ic_output, appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));   // Store the interference cancelled audio in the first reference channel
+    memcpy(frame_data->aec_reference_audio_samples[0], frame_data->samples[0], appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));   // Store the interference cancelled audio in the first reference channel
 #endif
 #endif
     stage_stats_end(STAGE_STATS_T0_IC_VNR, start);
@@ -115,15 +117,14 @@ static void stage_ns(frame_data_t *frame_data)
     const uint32_t start = stage_stats_start();
 #if appconfAUDIO_PIPELINE_SKIP_NS
 #else
-    int32_t DWORD_ALIGNED ns_output[appconfAUDIO_PIPELINE_FRAME_ADVANCE];
     configASSERT(NS_FRAME_ADVANCE == appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+    /* ns_api.h: input and output may be the same buffer */
     ns_process_frame(
                 &ns_stage_state.state,
-                ns_output,
+                frame_data->samples[0],
                 frame_data->samples[0]);
-    memcpy(frame_data->samples[0], ns_output, appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));
 #if appconfAUDIO_PIPELINE_STORE_NS_AUDIO
-    memcpy(frame_data->aec_reference_audio_samples[1], ns_output, appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));   // Store NS audio in the second reference channel
+    memcpy(frame_data->aec_reference_audio_samples[1], frame_data->samples[0], appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));   // Store NS audio in the second reference channel
 #endif
 #endif
     stage_stats_end(STAGE_STATS_T0_NS, start);
@@ -134,19 +135,18 @@ static void stage_agc(frame_data_t *frame_data)
     const uint32_t start = stage_stats_start();
 #if appconfAUDIO_PIPELINE_SKIP_AGC
 #else
-    int32_t DWORD_ALIGNED agc_output[appconfAUDIO_PIPELINE_FRAME_ADVANCE];
     configASSERT(AGC_FRAME_ADVANCE == appconfAUDIO_PIPELINE_FRAME_ADVANCE);
 
     agc_stage_state.md.vnr_flag = frame_data->vnr_pred_flag;
     agc_stage_state.md.aec_ref_power = frame_data->max_ref_energy;
     agc_stage_state.md.aec_corr_factor = frame_data->aec_corr_factor;
 
+    /* agc_api.h: input and output may be the same buffer */
     agc_process_frame(
             &agc_stage_state.state,
-            agc_output,
+            frame_data->samples[0],
             frame_data->samples[0],
             &agc_stage_state.md);
-    memcpy(frame_data->samples, agc_output, appconfAUDIO_PIPELINE_FRAME_ADVANCE * sizeof(int32_t));
 #endif
     stage_stats_end(STAGE_STATS_T0_AGC, start);
 }

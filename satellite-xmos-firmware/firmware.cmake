@@ -42,12 +42,13 @@ set_source_files_properties(
     PROPERTIES COMPILE_OPTIONS "-O2"
 )
 
-# The voice libraries build with -Os. Building them with -O2 trades RAM for
-# speed; check the gain with the stats servicer's stage times before keeping it.
-option(SATELLITE1_VOICE_LIBS_O2 "Build the AEC/IC/NS/AGC/VNR libraries with -O2" OFF)
+# The voice libraries build with -Os. Measured in xsim per 240 sample frame,
+# -O2 makes IC+VNR, NS and AGC (tile 0) 1.5-2.2% faster, about 115 us in all,
+# but the AEC (tile 1, short of RAM) only 0.1%: its time is in the xcore_math
+# kernels. So only the tile 0 libraries are built with -O2.
+option(SATELLITE1_VOICE_LIBS_O2 "Build the IC/NS/AGC/VNR libraries with -O2" ON)
 if(SATELLITE1_VOICE_LIBS_O2)
     foreach(VOICE_LIB
-            fwk_voice_module_lib_aec
             fwk_voice_module_lib_ic
             fwk_voice_module_lib_ns
             fwk_voice_module_lib_agc
