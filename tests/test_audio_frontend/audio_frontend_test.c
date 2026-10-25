@@ -139,6 +139,30 @@ static void test_mean_square(void)
     CHECK(audio_mean_square_s32(x, 1500) == 0.0f, "silence must have zero energy");
 }
 
+static void test_block_energies(void)
+{
+    /* Two 240 sample channels, the second 20 dB louder, as the AEC reference */
+    static int32_t x[2][240];
+    double e_ref[2] = {0, 0};
+    for (int ch = 0; ch < 2; ch++) {
+        for (int i = 0; i < 240; i++) {
+            x[ch][i] = (int32_t)((rng_uniform() - 0.5) * 2.0 * (ch ? 4000000.0 : 400000.0));
+            const double v = x[ch][i] / 2147483648.0;
+            e_ref[ch] += v * v;
+        }
+    }
+    float_s32_t max_e;
+    const double ms = audio_block_energies_s32(&x[0][0], 2, 240, &max_e);
+    const double ms_ref = audio_mean_square_s32(&x[0][0], 480);
+    CHECK(fabs(ms - ms_ref) <= 1e-4 * ms_ref, "mean square %g, audio_mean_square_s32 gives %g", ms, ms_ref);
+    const double max_d = ldexp((double)max_e.mant, max_e.exp);
+    CHECK(fabs(max_d - e_ref[1]) <= 1e-4 * e_ref[1], "max block energy %g, expected %g", max_d, e_ref[1]);
+
+    memset(x, 0, sizeof(x));
+    CHECK(audio_block_energies_s32(&x[0][0], 2, 240, &max_e) == 0.0f && max_e.mant == 0,
+          "silence must have zero energy");
+}
+
 /* Runs a quiet lead-in (to settle the noise floor) and then speech from one direction. */
 static doa_result_t run_doa(double azimuth_deg, double radius, int playback)
 {
@@ -692,6 +716,7 @@ int main(void)
 
     test_correlate_matches_reference();
     test_mean_square();
+    test_block_energies();
     test_doa_directions();
     test_doa_rejects_implausible_delays();
     test_doa_gated_during_playback();

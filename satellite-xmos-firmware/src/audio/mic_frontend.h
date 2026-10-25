@@ -3,6 +3,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "xmath/xmath.h"
+
 #include "audio/beamformer.h"
 #include "audio/doa.h"
 
@@ -126,3 +128,13 @@ void mic_apply_gain_q16(int32_t *samples, size_t count, int32_t gain_q16);
  * be word aligned.
  */
 float audio_mean_square_s32(const int32_t *samples, size_t count);
+
+/**
+ * Energies of `channels` consecutive blocks of `count` samples, in one pass
+ * each. Returns the mean square over all blocks (as audio_mean_square_s32()
+ * of the whole buffer) and sets *max_energy to the largest block energy,
+ * exactly as aec_calc_max_input_energy() computes it. samples must be word
+ * aligned.
+ */
+float audio_block_energies_s32(const int32_t *samples, size_t channels, size_t count,
+                               float_s32_t *max_energy);

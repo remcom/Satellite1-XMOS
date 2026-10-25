@@ -144,10 +144,13 @@ static void mics_init(void)
 
 static void i2s_init(void)
 {
+    /*
+     * No I2S RPC: the other tile sends the pipeline output as plain intertile
+     * messages to audio_output_task() (main.c), which avoids the per-frame
+     * heap allocations of an RPC call.
+     */
 #if appconfI2S_ENABLED
-    static rtos_driver_rpc_t i2s_rpc_config;
 #if ON_TILE(I2S_TILE_NO)
-    rtos_intertile_t *client_intertile_ctx[1] = {intertile_ctx};
     port_t p_i2s_dout[appconfI2S_AUDIO_OUTPUTS] = {
            PORT_I2S_DOUT1,
            PORT_I2S_DOUT2
@@ -167,16 +170,6 @@ static void i2s_init(void)
             PORT_I2S_LRCLK,
             PORT_MCLK,
             I2S_CLKBLK);
-    rtos_i2s_rpc_host_init(
-            i2s_ctx,
-            &i2s_rpc_config,
-            client_intertile_ctx,
-            1);
-#else
-    rtos_i2s_rpc_client_init(
-            i2s_ctx,
-            &i2s_rpc_config,
-            intertile_ctx);
 #endif
 #endif
 

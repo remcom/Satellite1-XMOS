@@ -219,13 +219,50 @@ void audio_pipeline_output(void *output_app_data,
     }
     stage_stats_end(STAGE_STATS_T0_OUT_SRC, src_start);
 
+#if ON_TILE(I2S_TILE_NO)
     rtos_i2s_tx(i2s_ctx,
                 (int32_t*) tmp,
                 appconfAUDIO_SPK_PIPELINE_FRAME_ADVANCE,
                 portMAX_DELAY);
+#else
+    /* To audio_output_task() on the I2S tile */
+    rtos_intertile_tx(intertile_ctx,
+                      appconfAUDIO_OUTPUT_PORT,
+                      tmp,
+                      sizeof(tmp));
+#endif
 #endif
     audio_frames_out = audio_frames_out + 1;
 }
+
+#if appconfI2S_ENABLED && ON_TILE(I2S_TILE_NO) && (I2S_TILE_NO != appconfAUDIO_PIPELINE_OUTPUT_TILE_NO)
+/*
+ * Plays the pipeline output that audio_pipeline_output() sends from the other
+ * tile. Replaces an I2S RPC call, which allocated the ~5.8 KB frame on the heap
+ * of both tiles for every frame, and a response message. Each frame is read
+ * out of the intertile channel before it is written to I2S, so other intertile
+ * traffic only waits behind it while the transfer itself runs. Runs at the
+ * priority the I2S RPC host had, so it drains the channel just as promptly.
+ */
+static void audio_output_task(void *arg)
+{
+    (void) arg;
+    static int32_t frame[appconfAUDIO_SPK_PIPELINE_FRAME_ADVANCE][2];
+
+    for (;;) {
+        const size_t len = rtos_intertile_rx_len(intertile_ctx,
+                                                 appconfAUDIO_OUTPUT_PORT,
+                                                 RTOS_OSAL_WAIT_FOREVER);
+        xassert(len == sizeof(frame));
+        rtos_intertile_rx_data(intertile_ctx, frame, len);
+
+        rtos_i2s_tx(i2s_ctx,
+                    &frame[0][0],
+                    appconfAUDIO_SPK_PIPELINE_FRAME_ADVANCE,
+                    portMAX_DELAY);
+    }
+}
+#endif
 
 
 
@@ -262,13 +299,13 @@ static void reset_watchdog(void)
 }
 #endif
 
+/* Heap usage is read with the stats servicer (STATS_SERVICER_CMD_HEAP_FREE) */
 static void mem_analysis(void)
 {
 #if ON_TILE(0)
     uint32_t frames_at_last_check = audio_frames_out;
 #endif
 	for (;;) {
-		rtos_printf("Tile[%d]:\n\tMinimum heap free: %d\n\tCurrent heap free: %d\n", THIS_XCORE_TILE, xPortGetMinimumEverFreeHeapSize(), xPortGetFreeHeapSize());
 #if ON_TILE(0)
         /*
          * Tile 0 outputs every frame that made it through both tiles, so a
@@ -413,6 +450,17 @@ void startup_task(void *arg)
 
 #endif
 
+
+#if appconfI2S_ENABLED && ON_TILE(I2S_TILE_NO) && (I2S_TILE_NO != appconfAUDIO_PIPELINE_OUTPUT_TILE_NO)
+    xTaskCreate(
+        audio_output_task,
+        "audio output",
+        RTOS_THREAD_STACK_SIZE(audio_output_task),
+        NULL,
+        appconfI2S_RPC_PRIORITY,
+        NULL
+    );
+#endif
 
 #if ON_TILE(SPEAKER_PIPELINE_TILE_NO)
     ref_input_queue = rtos_osal_malloc( sizeof(rtos_osal_queue_t) );
