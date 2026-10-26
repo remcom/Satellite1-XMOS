@@ -308,6 +308,11 @@ Commands:
 | `AUDIO_SERVICER_CMD_DOA` | `2` | Read | 4 bytes | 5 bytes |
 | `AUDIO_SERVICER_CMD_MIC_PAIR` | `3` | Read | 2 bytes | 3 bytes |
 | `AUDIO_SERVICER_CMD_BEAM` | `4` | Read | 2 bytes | 3 bytes |
+| `AUDIO_SERVICER_CMD_CH1_TAP` | `5` | Read/write | 1 byte | 2 bytes |
+| `AUDIO_SERVICER_CMD_IC_FAST_HOLD` | `6` | Read/write | 1 byte | 2 bytes |
+| `AUDIO_SERVICER_CMD_HPF` | `7` | Read/write | 1 byte | 2 bytes |
+| `AUDIO_SERVICER_CMD_STEER_POLICY` | `8` | Read/write | 1 byte | 2 bytes |
+| `AUDIO_SERVICER_CMD_WAKE_EVENT` | `9` | Read/write | 1 byte | 2 bytes |
 
 Read responses start with the command status byte, like the other servicers:
 `[23, status, data...]` on the wire.
@@ -333,6 +338,29 @@ Read responses start with the command status byte, like the other servicers:
   beam mode.
 - `BEAM`: beam steering azimuth in degrees as little-endian `uint16` (`0..359`,
   same convention as `DOA`), or `0xFFFF` when the mic mode is not `4`.
+- `CH1_TAP`: what the right I2S channel (channel 1) carries. The left channel
+  is always AEC+IC+NS+AGC. `0` AEC+IC+NS (default), `1` AEC+IC, before the NS,
+  `2` AEC only (the beam or mic after the echo canceller). None of them has
+  the AGC, so this is the channel to run a wake word engine on. Other values
+  are rejected with `SERVICER_WRONG_PAYLOAD`.
+- `IC_FAST_HOLD`: `1` (default) stops the interference canceller adapting
+  within one or two frames of speech onset. `0` keeps the fwk_voice timing,
+  which adapts for the first ~350-450 ms of an utterance and so partly cancels
+  the talker when the noise reference also hears them (mic pairs, or a beam
+  pointing elsewhere).
+- `HPF`: `1` (default) high-passes both pipeline channels at 100 Hz before the
+  AEC, `0` turns it off.
+- `STEER_POLICY`: what may move the beam (mic mode `4`) and the automatic
+  pair (mode `3`). `0` any speech (default), `1` only wake words, `2` nothing.
+  Under `0` and `1` a wake event steers at once. Other values are rejected with
+  `SERVICER_WRONG_PAYLOAD`.
+- `WAKE_EVENT`: write `1` right after a wake word was detected, `0` when the
+  conversation it started has ended. On `1` the device locates the wake word
+  from the DOA results of the last ~1.5 s and, unless the policy is `2`,
+  steers the beam (or picks the pair facing it) within a frame. Read `BEAM`
+  ~50 ms later for the new steering. While a conversation is active, speech
+  does not re-steer, for at most 60 s. Reads return `1` while a conversation
+  is active. Other values are rejected with `SERVICER_WRONG_PAYLOAD`.
 
 Writes to `DOA`, `MIC_PAIR` and `BEAM` are rejected with `CONTROL_BAD_COMMAND`.
 
@@ -472,6 +500,10 @@ Image status flags:
 - Added additive LED ring command `LED_RING_SERVICER_CMD_DOA_INDICATOR` (`1`).
 - Added the stats servicer (`250`): audio stage processing times, stack and
   heap use. The device now waits for five servicers to register.
+- Added additive audio servicer commands `AUDIO_SERVICER_CMD_CH1_TAP` (`5`),
+  `AUDIO_SERVICER_CMD_IC_FAST_HOLD` (`6`), `AUDIO_SERVICER_CMD_HPF` (`7`),
+  `AUDIO_SERVICER_CMD_STEER_POLICY` (`8`) and `AUDIO_SERVICER_CMD_WAKE_EVENT`
+  (`9`).
 
 ### `0x10`
 
