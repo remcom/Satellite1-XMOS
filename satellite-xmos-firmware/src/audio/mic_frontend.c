@@ -326,6 +326,16 @@ static uint8_t facing_mic(unsigned azimuth_deg)
 
 int mic_frontend_wake_word(mic_frontend_state_t *state, mic_mode_t mode)
 {
+    /*
+     * A new conversation, also when the end of the last one was never
+     * reported: restart the hold. conversation_frames is non-zero exactly when
+     * mic_frontend_set_steering() saw an active conversation this frame.
+     */
+    if (state->conversation_frames > 0) {
+        state->conversation_frames = 1;
+        state->conversation = 1;
+    }
+
     unsigned azimuth;
     if (!wake_direction(state, &azimuth)) {
         return 0;
@@ -436,6 +446,11 @@ void mic_frontend_get_masks(const mic_frontend_state_t *state,
 uint16_t mic_frontend_get_beam_azimuth(const mic_frontend_state_t *state, mic_mode_t mode)
 {
     return (mode == MIC_MODE_BEAM) ? state->beam.azimuth_deg : MIC_FRONTEND_NO_BEAM;
+}
+
+int mic_frontend_conversation_lapsed(const mic_frontend_state_t *state)
+{
+    return state->conversation_frames >= MIC_FRONTEND_CONVERSATION_MAX_FRAMES;
 }
 
 #define HPF_Q28 268435456.0f

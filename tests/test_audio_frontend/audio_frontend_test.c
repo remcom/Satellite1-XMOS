@@ -855,6 +855,23 @@ static void test_conversation_hold(void)
         feed_beam_doa(&st, 45, 1);
     }
     CHECK(st.beam.azimuth_deg == 45, "an endless conversation held the beam at %u", st.beam.azimuth_deg);
+    CHECK(mic_frontend_conversation_lapsed(&st), "the hold did not lapse");
+
+    /* a wake word in that conversation (its end still not reported) restarts the hold */
+    mic_frontend_set_steering(&st, STEER_POLICY_FOLLOW_SPEECH, 1);
+    (void) mic_frontend_wake_word(&st, MIC_MODE_BEAM);
+    CHECK(!mic_frontend_conversation_lapsed(&st) && st.conversation, "a wake word did not restart the hold");
+    idle_beam(&st, MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES);
+    for (int i = 0; i < 3 * MIC_FRONTEND_AUTO_STABLE_FRAMES; i++) {
+        mic_frontend_set_steering(&st, STEER_POLICY_FOLLOW_SPEECH, 1);
+        feed_beam_doa(&st, 225, 1);
+    }
+    CHECK(st.beam.azimuth_deg == 45, "speech re-steered after the second wake word to %u", st.beam.azimuth_deg);
+
+    /* ... but not outside a conversation */
+    mic_frontend_set_steering(&st, STEER_POLICY_FOLLOW_SPEECH, 0);
+    (void) mic_frontend_wake_word(&st, MIC_MODE_BEAM);
+    CHECK(!st.conversation && st.conversation_frames == 0, "a wake word without a conversation held");
 }
 
 static void test_wake_word_auto_pair(void)
@@ -964,6 +981,11 @@ static void test_vnr_hold(void)
     vnr_hold_init(&hold, 0.9f);
     const float v = vnr_hold_update(&hold, 0.1f);
     CHECK(fabsf(v - (0.97f * 0.9f + 0.03f * 0.1f)) < 1e-6f, "release step gives %f", v);
+
+    /* the leakage above 0.75 waits for the EMA */
+    CHECK(vnr_hold_adapt_vnr(0.9f, 0.4f, 0.75f) == 0.75f, "fast estimate leaked before the EMA");
+    CHECK(vnr_hold_adapt_vnr(0.9f, 0.8f, 0.75f) == 0.9f, "clamped with the EMA above the threshold");
+    CHECK(vnr_hold_adapt_vnr(0.6f, 0.1f, 0.75f) == 0.6f, "clamped below the threshold");
 }
 
 static void test_audio_ctrl(void)
@@ -992,6 +1014,27 @@ static void test_audio_ctrl(void)
     CHECK(audio_ctrl_get_wake_count() == count + 1 && audio_ctrl_get_conversation(), "wake event");
     audio_ctrl_wake_event(0);
     CHECK(audio_ctrl_get_wake_count() == count + 1 && !audio_ctrl_get_conversation(), "end of conversation");
+
+    /* the read reflects the front end's hold, which a new wake word restarts */
+    const doa_result_t doa = {0};
+    audio_ctrl_wake_event(1);
+    CHECK(audio_ctrl_get_conversation_held(), "not held after a wake word");
+    audio_ctrl_publish(&doa, 0, 0, MIC_FRONTEND_NO_BEAM, 1);
+    CHECK(audio_ctrl_get_conversation() && !audio_ctrl_get_conversation_held(), "held after the hold lapsed");
+    audio_ctrl_wake_event(1);
+    CHECK(audio_ctrl_get_conversation_held(), "a wake word did not restart the hold");
+    audio_ctrl_wake_event(0);
+    CHECK(!audio_ctrl_get_conversation_held(), "held after the conversation ended");
+
+    /* taps the build cannot produce are rejected, and an unavailable current tap falls back to NS */
+    CHECK(audio_ctrl_set_ch1_tap(CH1_TAP_AEC) == 0, "rejected the AEC tap");
+    audio_ctrl_set_ch1_taps(1u << CH1_TAP_IC);
+    CHECK(audio_ctrl_get_ch1_tap() == CH1_TAP_NS, "kept an unavailable tap");
+    CHECK(audio_ctrl_set_ch1_tap(CH1_TAP_AEC) != 0, "accepted an unavailable tap");
+    CHECK(audio_ctrl_set_ch1_tap(CH1_TAP_IC) == 0 && audio_ctrl_set_ch1_tap(CH1_TAP_NS) == 0,
+          "rejected an available tap");
+    audio_ctrl_set_ch1_taps(0);
+    CHECK(audio_ctrl_set_ch1_tap(CH1_TAP_NS) == 0, "rejected the NS tap");
 }
 
 static void test_gain(void)

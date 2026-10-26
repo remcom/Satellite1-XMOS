@@ -101,7 +101,7 @@ static control_ret_t audio_servicer_read_cmd(control_resid_t resid, control_cmd_
         break;
 
     case AUDIO_SERVICER_CMD_WAKE_EVENT:
-        payload_ptr[0] = (uint8_t) audio_ctrl_get_conversation();
+        payload_ptr[0] = (uint8_t) audio_ctrl_get_conversation_held();
         break;
 
     default:

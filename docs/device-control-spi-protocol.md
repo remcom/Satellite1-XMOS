@@ -341,13 +341,15 @@ Read responses start with the command status byte, like the other servicers:
 - `CH1_TAP`: what the right I2S channel (channel 1) carries. The left channel
   is always AEC+IC+NS+AGC. `0` AEC+IC+NS (default), `1` AEC+IC, before the NS,
   `2` AEC only (the beam or mic after the echo canceller). None of them has
-  the AGC, so this is the channel to run a wake word engine on. Other values
-  are rejected with `SERVICER_WRONG_PAYLOAD`.
+  the AGC, so this is the channel to run a wake word engine on. Other values,
+  and `1` or `2` in a build that skips the IC (or does not store its output,
+  for `1`), are rejected with `SERVICER_WRONG_PAYLOAD`.
 - `IC_FAST_HOLD`: `1` (default) stops the interference canceller adapting
   within one or two frames of speech onset. `0` keeps the fwk_voice timing,
   which adapts for the first ~350-450 ms of an utterance and so partly cancels
   the talker when the noise reference also hears them (mic pairs, or a beam
-  pointing elsewhere).
+  pointing elsewhere). The filter leakage during speech keeps the fwk_voice
+  timing either way.
 - `HPF`: `1` (default) high-passes both pipeline channels at 100 Hz before the
   AEC, `0` turns it off.
 - `STEER_POLICY`: what may move the beam (mic mode `4`) and the automatic
@@ -359,8 +361,10 @@ Read responses start with the command status byte, like the other servicers:
   from the DOA results of the last ~1.5 s and, unless the policy is `2`,
   steers the beam (or picks the pair facing it) within a frame. Read `BEAM`
   ~50 ms later for the new steering. While a conversation is active, speech
-  does not re-steer, for at most 60 s. Reads return `1` while a conversation
-  is active. Other values are rejected with `SERVICER_WRONG_PAYLOAD`.
+  does not re-steer, for at most 60 s; another `1` (a new wake word) restarts
+  that limit, with or without a `0` in between. Reads return `1` while the
+  steering is held for a conversation: `0` after a `0` was written or once
+  the 60 s ran out. Other values are rejected with `SERVICER_WRONG_PAYLOAD`.
 
 Writes to `DOA`, `MIC_PAIR` and `BEAM` are rejected with `CONTROL_BAD_COMMAND`.
 

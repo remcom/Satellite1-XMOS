@@ -149,7 +149,8 @@ static void stage_frontend(frame_data_t *frame_data)
     uint8_t ch1_mask;
     mic_frontend_get_masks(&mic_frontend_state, mode, &ch0_mask, &ch1_mask);
     audio_ctrl_publish(doa, ch0_mask, ch1_mask,
-                       mic_frontend_get_beam_azimuth(&mic_frontend_state, mode));
+                       mic_frontend_get_beam_azimuth(&mic_frontend_state, mode),
+                       mic_frontend_conversation_lapsed(&mic_frontend_state));
 }
 
 static void stage_delay(frame_data_t *frame_data)
@@ -244,6 +245,7 @@ static void initialize_pipeline_stages(void)
 {
     frame_pool_init(&frame_pool, sizeof(frame_data_t), AP_T1_FRAME_COUNT);
     mic_frontend_init(&mic_frontend_state);
+    audio_ctrl_set_ch1_taps(AP_CH1_TAPS);
     doa_init(&doa_state);
     mic_hpf_init(&mic_hpf);
 

@@ -144,9 +144,15 @@ static void stage_vnr_and_ic(frame_data_t *frame_data)
 
     /* Tracked either way, so switching the fast hold on starts from the current estimate */
     const float hold_vnr = vnr_hold_update(&vnr_hold, float_s32_to_float(input_vnr));
-    ic_adapt(&ic_stage_state.state,
-             AUDIO_CTRL_T0_IC_FAST_HOLD(frame_data->t0_ctrl) ? f32_to_float_s32(hold_vnr)
-                                                              : vnr_pred_state->input_vnr_pred);
+    float_s32_t adapt_vnr = vnr_pred_state->input_vnr_pred;
+    if (AUDIO_CTRL_T0_IC_FAST_HOLD(frame_data->t0_ctrl)) {
+        const float_s32_t threshold_high =
+            ic_stage_state.state.ic_adaption_controller_state.adaption_controller_config.input_vnr_threshold_high;
+        adapt_vnr = f32_to_float_s32(vnr_hold_adapt_vnr(hold_vnr,
+                                                        float_s32_to_float(adapt_vnr),
+                                                        float_s32_to_float(threshold_high)));
+    }
+    ic_adapt(&ic_stage_state.state, adapt_vnr);
 
     /* Intentionally ignoring comms ch from here on out */
 #if appconfAUDIO_PIPELINE_STORE_IC_AUDIO    

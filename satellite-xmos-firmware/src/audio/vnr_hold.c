@@ -11,3 +11,11 @@ float vnr_hold_update(vnr_hold_t *hold, float vnr)
     hold->value = alpha * hold->value + (1.0f - alpha) * vnr;
     return hold->value;
 }
+
+float vnr_hold_adapt_vnr(float hold_vnr, float ema_vnr, float threshold_high)
+{
+    if (ema_vnr > threshold_high || hold_vnr <= threshold_high) {
+        return hold_vnr;
+    }
+    return threshold_high;
+}

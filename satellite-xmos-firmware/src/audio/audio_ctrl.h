@@ -42,6 +42,11 @@ mic_mode_t audio_ctrl_get_mic_mode(void);
 
 /** \return 0 on success, -1 for an unknown tap */
 int audio_ctrl_set_ch1_tap(unsigned tap);
+/**
+ * Limits audio_ctrl_set_ch1_tap() to the taps the pipeline of this build can
+ * produce, a bit per ch1_tap_t; CH1_TAP_NS is always allowed. All by default.
+ */
+void audio_ctrl_set_ch1_taps(uint32_t taps);
 ch1_tap_t audio_ctrl_get_ch1_tap(void);
 
 /** Fast attack of the VNR that decides when the IC stops adapting (0 = fwk_voice EMA only). */
@@ -66,11 +71,17 @@ steer_policy_t audio_ctrl_get_steer_policy(void);
 void audio_ctrl_wake_event(unsigned active);
 /** Number of wake words reported since boot (wraps). */
 uint32_t audio_ctrl_get_wake_count(void);
+/** The last reported wake event. */
 unsigned audio_ctrl_get_conversation(void);
+/** 1 while the conversation is active and the front end still holds the steering for it. */
+unsigned audio_ctrl_get_conversation_held(void);
 
-/** Called by the pipeline once per frame. */
+/**
+ * Called by the pipeline once per frame. lapsed: the conversation hold ran out
+ * (mic_frontend_conversation_lapsed()).
+ */
 void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_mask,
-                        uint16_t beam_azimuth_deg);
+                        uint16_t beam_azimuth_deg, int lapsed);
 
 /** Latest DOA result. `updated` is always 0: a frame-long flag is too short
  *  for a polling reader, use audio_ctrl_get_doa_update_count() instead. */

@@ -176,7 +176,7 @@ void mic_frontend_update(mic_frontend_state_t *state,
  * frame before mic_frontend_update(). While a conversation is active the talker
  * is known, so speech does not re-steer; after
  * MIC_FRONTEND_CONVERSATION_MAX_FRAMES the hold lapses until the next
- * conversation.
+ * conversation or wake word (mic_frontend_wake_word()).
  */
 void mic_frontend_set_steering(mic_frontend_state_t *state,
                                steer_policy_t policy,
@@ -187,7 +187,8 @@ void mic_frontend_set_steering(mic_frontend_state_t *state,
  * MIC_FRONTEND_WAKE_WINDOW_FRAMES and, unless the policy is
  * STEER_POLICY_FIXED, steers BEAM there at once (crossfaded over the next
  * frame, without the stable time and the dwell) or switches AUTO_PAIR to the
- * mic facing it. Call after mic_frontend_update() for the frame.
+ * mic facing it. Restarts the hold of an active conversation. Call after
+ * mic_frontend_set_steering() and mic_frontend_update() for the frame.
  *
  * \return 1 if the wake word was located, 0 if there were too few or too
  *         scattered DOA results
@@ -217,6 +218,9 @@ void mic_frontend_get_masks(const mic_frontend_state_t *state,
 
 /** Steering azimuth in degrees in MIC_MODE_BEAM, else MIC_FRONTEND_NO_BEAM. */
 uint16_t mic_frontend_get_beam_azimuth(const mic_frontend_state_t *state, mic_mode_t mode);
+
+/** 1 if the conversation is still active but its hold ran out (MIC_FRONTEND_CONVERSATION_MAX_FRAMES). */
+int mic_frontend_conversation_lapsed(const mic_frontend_state_t *state);
 
 void mic_hpf_init(mic_hpf_t *hpf);
 /** Clears the filter history, e.g. before the filter is used again after a pause. */

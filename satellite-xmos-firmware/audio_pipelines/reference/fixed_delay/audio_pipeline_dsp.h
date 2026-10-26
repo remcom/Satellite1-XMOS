@@ -72,6 +72,13 @@ typedef struct {
  * itself needed there; otherwise tile 1 sends the frame without it.
  */
 #define AP_FRAME_SENDS_REF  (appconfAUDIO_PIPELINE_SKIP_NS || !appconfAUDIO_PIPELINE_STORE_NS_AUDIO)
+/*
+ * The ch1_tap_t outputs tile 0 can produce (audio_ctrl_set_ch1_taps()): the IC
+ * and AEC taps are written by the IC stage, the IC one only while it is stored.
+ */
+#define AP_CH1_TAPS  ((1u << CH1_TAP_NS) | \
+                      ((!appconfAUDIO_PIPELINE_SKIP_IC_AND_VNR && appconfAUDIO_PIPELINE_STORE_IC_AUDIO) ? (1u << CH1_TAP_IC) : 0) | \
+                      (!appconfAUDIO_PIPELINE_SKIP_IC_AND_VNR ? (1u << CH1_TAP_AEC) : 0))
 #define AP_FRAME_TX_BYTES   (AP_FRAME_SENDS_REF ? sizeof(frame_data_t) \
                                                 : offsetof(frame_data_t, aec_reference_audio_samples))
 
