@@ -11,6 +11,7 @@
 
 #define MIC_FRONTEND_PI 3.14159265358979f
 #define ALL_MICS_MASK   ((uint8_t)((1u << MIC_FRONTEND_MIC_COUNT) - 1))
+#define DOA_UNIT_Q14    16384.0f
 
 static const uint8_t opposite_mic[MIC_FRONTEND_MIC_COUNT] = {
     [MIC_IDX_NORTH] = MIC_IDX_SOUTH,
@@ -24,6 +25,12 @@ static const uint8_t sector_mic[4] = {
     MIC_IDX_NORTH, MIC_IDX_EAST, MIC_IDX_SOUTH, MIC_IDX_WEST,
 };
 
+static unsigned angle_between(unsigned a_deg, unsigned b_deg)
+{
+    const unsigned d = (a_deg > b_deg ? a_deg - b_deg : b_deg - a_deg) % 360;
+    return d > 180 ? 360 - d : d;
+}
+
 void mic_frontend_init(mic_frontend_state_t *state)
 {
     memset(state, 0, sizeof(*state));
@@ -31,7 +38,74 @@ void mic_frontend_init(mic_frontend_state_t *state)
     state->ch1 = MIC_IDX_WEST;
     state->candidate = MIC_IDX_EAST;
     state->mode = MIC_MODE_COUNT;
+    state->steer_policy = STEER_POLICY_FOLLOW_SPEECH;
+    state->wake_azimuth_deg = MIC_FRONTEND_NO_BEAM;
     beamformer_init(&state->beam, MIC_FRONTEND_BEAM_INITIAL_DEG);
+}
+
+void mic_frontend_set_steering(mic_frontend_state_t *state,
+                               steer_policy_t policy,
+                               int conversation_active)
+{
+    state->steer_policy = (policy < STEER_POLICY_COUNT) ? (uint8_t)policy : STEER_POLICY_FOLLOW_SPEECH;
+    if (!conversation_active) {
+        state->conversation = 0;
+        state->conversation_frames = 0;
+        return;
+    }
+    if (state->conversation_frames < MIC_FRONTEND_CONVERSATION_MAX_FRAMES) {
+        state->conversation_frames++;
+    }
+    state->conversation = state->conversation_frames < MIC_FRONTEND_CONVERSATION_MAX_FRAMES;
+}
+
+/* Only speech under STEER_POLICY_FOLLOW_SPEECH, outside a conversation, moves the steering */
+static int speech_steers(const mic_frontend_state_t *state)
+{
+    return state->steer_policy == STEER_POLICY_FOLLOW_SPEECH && !state->conversation;
+}
+
+static void record_doa(mic_frontend_state_t *state, const doa_result_t *doa)
+{
+    state->frame_count++;
+    if (!doa->updated) {
+        return;
+    }
+    mic_frontend_doa_entry_t *e = &state->doa_history[state->doa_history_next];
+    const float a = (float)(doa->azimuth_deg % 360) * (MIC_FRONTEND_PI / 180.0f);
+    e->frame = state->frame_count;
+    e->x_q14 = (int16_t)lrintf(cosf(a) * DOA_UNIT_Q14);
+    e->y_q14 = (int16_t)lrintf(sinf(a) * DOA_UNIT_Q14);
+    e->confidence = doa->confidence;
+    state->doa_history_next = (state->doa_history_next + 1) % MIC_FRONTEND_WAKE_HISTORY;
+    if (state->doa_history_len < MIC_FRONTEND_WAKE_HISTORY) {
+        state->doa_history_len++;
+    }
+
+    /* The conversation is the talker we already know about, so only idle speech counts */
+    if (!state->conversation) {
+        const float decay = 1.0f - 1.0f / (float)MIC_FRONTEND_IDLE_DOA_FRAMES;
+        for (unsigned b = 0; b < MIC_FRONTEND_IDLE_DOA_BINS; b++) {
+            state->idle_doa[b] *= decay;
+        }
+        const unsigned bin = (doa->azimuth_deg % 360) * MIC_FRONTEND_IDLE_DOA_BINS / 360;
+        state->idle_doa[bin] += 1.0f - decay;
+    }
+}
+
+/* Share of the idle speech that came from within MIC_FRONTEND_WAKE_CLUSTER_DEG of azimuth_deg */
+static float idle_share(const mic_frontend_state_t *state, unsigned azimuth_deg)
+{
+    const unsigned bin_deg = 360 / MIC_FRONTEND_IDLE_DOA_BINS;
+    float near = 0.0f;
+    float total = 0.0f;
+    for (unsigned b = 0; b < MIC_FRONTEND_IDLE_DOA_BINS; b++) {
+        total += state->idle_doa[b];
+        if (angle_between(b * bin_deg + bin_deg / 2, azimuth_deg) <= MIC_FRONTEND_WAKE_CLUSTER_DEG) {
+            near += state->idle_doa[b];
+        }
+    }
+    return (total > 0.0f) ? near / total : 0.0f;
 }
 
 static void set_pair(mic_frontend_state_t *state, uint8_t ch0)
@@ -40,12 +114,6 @@ static void set_pair(mic_frontend_state_t *state, uint8_t ch0)
     state->ch1 = opposite_mic[ch0];
     state->candidate = ch0;
     state->candidate_frames = 0;
-}
-
-static unsigned angle_between(unsigned a_deg, unsigned b_deg)
-{
-    const unsigned d = (a_deg > b_deg ? a_deg - b_deg : b_deg - a_deg) % 360;
-    return d > 180 ? 360 - d : d;
 }
 
 static void reset_beam_tracking(mic_frontend_state_t *state)
@@ -57,7 +125,10 @@ static void reset_beam_tracking(mic_frontend_state_t *state)
 
 static void enter_beam(mic_frontend_state_t *state, const doa_result_t *doa)
 {
-    if (doa->valid) {
+    if (state->steer_policy == STEER_POLICY_WAKE_WORD &&
+        state->wake_azimuth_deg != MIC_FRONTEND_NO_BEAM) {
+        beamformer_point(&state->beam, state->wake_azimuth_deg);
+    } else if (doa->valid && state->steer_policy != STEER_POLICY_FIXED) {
         beamformer_point(&state->beam, doa->azimuth_deg);
     }
     state->frames_since_switch = MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES;
@@ -71,6 +142,10 @@ static void enter_beam(mic_frontend_state_t *state, const doa_result_t *doa)
  */
 static void update_beam(mic_frontend_state_t *state, const doa_result_t *doa)
 {
+    if (!speech_steers(state)) {
+        reset_beam_tracking(state);
+        return;
+    }
     if (!doa->updated) {
         return;
     }
@@ -105,6 +180,7 @@ void mic_frontend_update(mic_frontend_state_t *state,
                          mic_mode_t mode,
                          const doa_result_t *doa)
 {
+    record_doa(state, doa);
     if (state->frames_since_switch < MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES) {
         state->frames_since_switch++;
     }
@@ -137,6 +213,11 @@ void mic_frontend_update(mic_frontend_state_t *state,
     if (!doa->updated) {
         return;
     }
+    if (!speech_steers(state)) {
+        state->candidate = state->ch0;
+        state->candidate_frames = 0;
+        return;
+    }
 
     const unsigned azimuth = doa->azimuth_deg % 360;
     const unsigned sector = ((azimuth + 45) / 90) % 4;
@@ -165,6 +246,120 @@ void mic_frontend_update(mic_frontend_state_t *state,
         set_pair(state, mic);
         state->frames_since_switch = 0;
     }
+}
+
+static unsigned vector_azimuth(float x, float y)
+{
+    float deg = atan2f(y, x) * (180.0f / MIC_FRONTEND_PI);
+    if (deg < 0.0f) {
+        deg += 360.0f;
+    }
+    return (unsigned)lrintf(deg) % 360;
+}
+
+/*
+ * Direction of the wake word: the confidence weighted mean of a group of
+ * recent DOA results within MIC_FRONTEND_WAKE_CLUSTER_DEG of one of them.
+ * Speech from elsewhere in the window (a TV before and after the wake word,
+ * the start of the command) forms groups of its own; the best ranked one
+ * wins, see MIC_FRONTEND_WAKE_NOVELTY. Results spread too widely to have a
+ * group with MIC_FRONTEND_WAKE_MIN_SHARE of them give no direction.
+ */
+static int wake_direction(const mic_frontend_state_t *state, unsigned *azimuth_deg)
+{
+    /* Entries closer than the cluster angle have unit vectors with a larger dot product */
+    const float min_dot = cosf((float)MIC_FRONTEND_WAKE_CLUSTER_DEG * (MIC_FRONTEND_PI / 180.0f)) *
+                          DOA_UNIT_Q14 * DOA_UNIT_Q14;
+    const mic_frontend_doa_entry_t *h = state->doa_history;
+    float total = 0.0f;
+    for (unsigned i = 0; i < state->doa_history_len; i++) {
+        if (state->frame_count - h[i].frame < MIC_FRONTEND_WAKE_WINDOW_FRAMES) {
+            total += (float)h[i].confidence + 1.0f;
+        }
+    }
+
+    float best_score = 0.0f;
+    unsigned best_azimuth = 0;
+    for (unsigned i = 0; i < state->doa_history_len; i++) {
+        if (state->frame_count - h[i].frame >= MIC_FRONTEND_WAKE_WINDOW_FRAMES) {
+            continue;
+        }
+        unsigned count = 0;
+        float w = 0.0f;
+        float x = 0.0f;
+        float y = 0.0f;
+        for (unsigned j = 0; j < state->doa_history_len; j++) {
+            if (state->frame_count - h[j].frame >= MIC_FRONTEND_WAKE_WINDOW_FRAMES) {
+                continue;
+            }
+            const float dot = (float)h[i].x_q14 * (float)h[j].x_q14 + (float)h[i].y_q14 * (float)h[j].y_q14;
+            if (dot >= min_dot) {
+                const float wj = (float)h[j].confidence + 1.0f;
+                count++;
+                w += wj;
+                x += wj * (float)h[j].x_q14;
+                y += wj * (float)h[j].y_q14;
+            }
+        }
+        if (count < MIC_FRONTEND_WAKE_MIN_RESULTS || w < MIC_FRONTEND_WAKE_MIN_SHARE * total) {
+            continue;
+        }
+        const unsigned azimuth = vector_azimuth(x, y);
+        const float score = w * (1.0f - MIC_FRONTEND_WAKE_NOVELTY * idle_share(state, azimuth));
+        if (score > best_score) {
+            best_score = score;
+            best_azimuth = azimuth;
+        }
+    }
+    if (best_score <= 0.0f) {
+        return 0;
+    }
+    *azimuth_deg = best_azimuth;
+    return 1;
+}
+
+/* Mic closest to azimuth_deg */
+static uint8_t facing_mic(unsigned azimuth_deg)
+{
+    return sector_mic[((azimuth_deg % 360 + 45) / 90) % 4];
+}
+
+int mic_frontend_wake_word(mic_frontend_state_t *state, mic_mode_t mode)
+{
+    /*
+     * A new conversation, also when the end of the last one was never
+     * reported: restart the hold. conversation_frames is non-zero exactly when
+     * mic_frontend_set_steering() saw an active conversation this frame.
+     */
+    if (state->conversation_frames > 0) {
+        state->conversation_frames = 1;
+        state->conversation = 1;
+    }
+
+    unsigned azimuth;
+    if (!wake_direction(state, &azimuth)) {
+        return 0;
+    }
+    state->wake_azimuth_deg = (uint16_t)azimuth;
+    if (state->steer_policy == STEER_POLICY_FIXED) {
+        return 1;
+    }
+
+    if (mode == MIC_MODE_BEAM) {
+        reset_beam_tracking(state);
+        /* A small correction is not worth making the AEC and IC re-adapt */
+        if (angle_between(azimuth, state->beam.azimuth_deg) > MIC_FRONTEND_BEAM_HOLD_DEG) {
+            beamformer_steer(&state->beam, azimuth);
+            state->frames_since_switch = 0;
+        }
+    } else if (mode == MIC_MODE_AUTO_PAIR) {
+        const uint8_t mic = facing_mic(azimuth);
+        if (mic != state->ch0) {
+            set_pair(state, mic);
+            state->frames_since_switch = 0;
+        }
+    }
+    return 1;
 }
 
 static void pair_for_mode(const mic_frontend_state_t *state, mic_mode_t mode,
@@ -251,6 +446,70 @@ void mic_frontend_get_masks(const mic_frontend_state_t *state,
 uint16_t mic_frontend_get_beam_azimuth(const mic_frontend_state_t *state, mic_mode_t mode)
 {
     return (mode == MIC_MODE_BEAM) ? state->beam.azimuth_deg : MIC_FRONTEND_NO_BEAM;
+}
+
+int mic_frontend_conversation_lapsed(const mic_frontend_state_t *state)
+{
+    return state->conversation_frames >= MIC_FRONTEND_CONVERSATION_MAX_FRAMES;
+}
+
+#define HPF_Q28 268435456.0f
+
+void mic_hpf_init(mic_hpf_t *hpf)
+{
+    /* Bilinear transform of a second order Butterworth high-pass */
+    const float k = tanf(MIC_FRONTEND_PI * (float)MIC_HPF_CUTOFF_HZ / (float)MIC_HPF_SAMPLE_RATE);
+    const float q = 0.70710678f;
+    const float norm = 1.0f / (1.0f + k / q + k * k);
+    hpf->b0 = (int32_t)lrintf(norm * HPF_Q28);
+    hpf->b1 = -2 * hpf->b0;
+    hpf->b2 = hpf->b0;
+    hpf->a1 = (int32_t)lrintf(2.0f * (k * k - 1.0f) * norm * HPF_Q28);
+    hpf->a2 = (int32_t)lrintf((1.0f - k / q + k * k) * norm * HPF_Q28);
+    mic_hpf_reset(hpf);
+}
+
+void mic_hpf_reset(mic_hpf_t *hpf)
+{
+    memset(hpf->x1, 0, sizeof(hpf->x1));
+    memset(hpf->x2, 0, sizeof(hpf->x2));
+    memset(hpf->y1, 0, sizeof(hpf->y1));
+    memset(hpf->y2, 0, sizeof(hpf->y2));
+}
+
+void mic_hpf_process(mic_hpf_t *hpf, int32_t *samples, size_t frame_count)
+{
+    for (unsigned ch = 0; ch < MIC_HPF_CHANNELS; ch++) {
+        int32_t *x = &samples[ch * frame_count];
+        int32_t x1 = hpf->x1[ch];
+        int32_t x2 = hpf->x2[ch];
+        int32_t y1 = hpf->y1[ch];
+        int32_t y2 = hpf->y2[ch];
+        for (size_t i = 0; i < frame_count; i++) {
+            /*
+             * Direct form I. The Q28 coefficients add up to less than 8 in
+             * absolute value, so the 64-bit sum of Q31 products cannot overflow.
+             */
+            const int32_t x0 = x[i];
+            int64_t acc = (int64_t)hpf->b0 * x0 + (int64_t)hpf->b1 * x1 + (int64_t)hpf->b2 * x2
+                        - (int64_t)hpf->a1 * y1 - (int64_t)hpf->a2 * y2;
+            acc = (acc + (1 << 27)) >> 28;
+            if (acc > INT32_MAX) {
+                acc = INT32_MAX;
+            } else if (acc < -INT32_MAX) {
+                acc = -INT32_MAX;
+            }
+            x2 = x1;
+            x1 = x0;
+            y2 = y1;
+            y1 = (int32_t)acc;
+            x[i] = y1;
+        }
+        hpf->x1[ch] = x1;
+        hpf->x2[ch] = x2;
+        hpf->y1[ch] = y1;
+        hpf->y2[ch] = y2;
+    }
 }
 
 int32_t mic_gain_db_to_q16(unsigned gain_db)

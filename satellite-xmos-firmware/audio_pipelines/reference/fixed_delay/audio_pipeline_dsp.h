@@ -51,13 +51,16 @@ typedef struct {
     int32_t vnr_pred_flag;
     float_s32_t max_ref_energy;
     float_s32_t aec_corr_factor;
+    /* Tile 0 settings from audio_ctrl on tile 1, see AUDIO_CTRL_T0_*() */
+    uint32_t t0_ctrl;
     /* Tile 1 stage stats, passed on to tile 0 where the stats servicer reads them */
     stage_stats_t1_report_t t1_stats;
 
     /*
      * The speaker reference until the AEC has run. Afterwards reused:
      *   [0] AEC+IC output (appconfAUDIO_PIPELINE_STORE_IC_AUDIO)
-     *   [1] AEC+IC+NS output (appconfAUDIO_PIPELINE_STORE_NS_AUDIO)
+     *   [1] AEC+IC+NS output (appconfAUDIO_PIPELINE_STORE_NS_AUDIO), or the
+     *       AEC output with CH1_TAP_AEC
      * Last in the frame, so tile 1 can leave it out when tile 0 does not read it.
      */
     int32_t DWORD_ALIGNED aec_reference_audio_samples[appconfAUDIO_PIPELINE_REF_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
@@ -69,6 +72,13 @@ typedef struct {
  * itself needed there; otherwise tile 1 sends the frame without it.
  */
 #define AP_FRAME_SENDS_REF  (appconfAUDIO_PIPELINE_SKIP_NS || !appconfAUDIO_PIPELINE_STORE_NS_AUDIO)
+/*
+ * The ch1_tap_t outputs tile 0 can produce (audio_ctrl_set_ch1_taps()): the IC
+ * and AEC taps are written by the IC stage, the IC one only while it is stored.
+ */
+#define AP_CH1_TAPS  ((1u << CH1_TAP_NS) | \
+                      ((!appconfAUDIO_PIPELINE_SKIP_IC_AND_VNR && appconfAUDIO_PIPELINE_STORE_IC_AUDIO) ? (1u << CH1_TAP_IC) : 0) | \
+                      (!appconfAUDIO_PIPELINE_SKIP_IC_AND_VNR ? (1u << CH1_TAP_AEC) : 0))
 #define AP_FRAME_TX_BYTES   (AP_FRAME_SENDS_REF ? sizeof(frame_data_t) \
                                                 : offsetof(frame_data_t, aec_reference_audio_samples))
 

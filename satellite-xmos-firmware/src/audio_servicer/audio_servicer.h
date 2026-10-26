@@ -8,7 +8,8 @@
 /**
  * @brief Audio servicer task.
  *
- * Handles mic gain, mic mode and DOA commands from the device control interface.
+ * Handles the mic, DOA, output channel and beam steering commands (audio_cmds.h)
+ * from the device control interface.
  * Runs on the mic array tile, next to the audio pipeline state it controls.
  *
  * \param args   Pointer to the servicer_register_ctx_t of this servicer

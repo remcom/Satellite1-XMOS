@@ -38,6 +38,10 @@
 #error DOA_FRAME_SIZE must match the pipeline frame advance
 #endif
 
+#if appconfAUDIO_PIPELINE_CHANNELS != MIC_HPF_CHANNELS
+#error The high-pass filter expects appconfAUDIO_PIPELINE_CHANNELS channels
+#endif
+
 #if ON_TILE(1)
 #if appconfINPUT_SAMPLES_MIC_DELAY_MS != 0
 static stage_delay_ctx_t DWORD_ALIGNED delay_buf_state = {};
@@ -54,6 +58,10 @@ static frame_pool_t frame_pool;
 static int32_t DWORD_ALIGNED mic_raw[appconfAUDIO_PIPELINE_MIC_COUNT][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
 static mic_frontend_state_t mic_frontend_state;
 static doa_state_t doa_state;
+static mic_hpf_t mic_hpf;
+static int mic_hpf_active;
+/* audio_ctrl_get_wake_count() of the last wake word handed to the front end */
+static uint32_t wake_count_seen;
 
 
 static void *audio_pipeline_input_i(void *input_app_data)
@@ -62,6 +70,7 @@ static void *audio_pipeline_input_i(void *input_app_data)
     /* The samples and the reference are overwritten below and by the front end */
     frame_data->vnr_pred_flag = 0;
     frame_data->aec_corr_factor = (float_s32_t){0, 0};
+    frame_data->t0_ctrl = audio_ctrl_get_t0_word();
 
     audio_pipeline_input(input_app_data,
                          &frame_data->aec_reference_audio_samples[0][0],
@@ -106,18 +115,42 @@ static void stage_frontend(frame_data_t *frame_data)
     const doa_result_t *doa = doa_process(&doa_state,
                                           &mic_raw[0][0],
                                           playback_active(frame_data));
+    mic_frontend_set_steering(&mic_frontend_state,
+                              audio_ctrl_get_steer_policy(),
+                              audio_ctrl_get_conversation());
     mic_frontend_update(&mic_frontend_state, mode, doa);
+    const uint32_t wake_count = audio_ctrl_get_wake_count();
+    if (wake_count != wake_count_seen) {
+        /* Before the wake sound plays: the DOA results of the wake word are in the history */
+        wake_count_seen = wake_count;
+        (void) mic_frontend_wake_word(&mic_frontend_state, mode);
+    }
     mic_frontend_process(&mic_frontend_state,
                          mode,
                          &mic_raw[0][0],
                          &frame_data->samples[0][0],
                          appconfAUDIO_PIPELINE_FRAME_ADVANCE);
 
+    /*
+     * Before the AEC: it is linear, so the filter on the mics just becomes part
+     * of the echo path it models.
+     */
+    if (audio_ctrl_get_hpf()) {
+        if (!mic_hpf_active) {
+            mic_hpf_reset(&mic_hpf);
+            mic_hpf_active = 1;
+        }
+        mic_hpf_process(&mic_hpf, &frame_data->samples[0][0], appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+    } else {
+        mic_hpf_active = 0;
+    }
+
     uint8_t ch0_mask;
     uint8_t ch1_mask;
     mic_frontend_get_masks(&mic_frontend_state, mode, &ch0_mask, &ch1_mask);
     audio_ctrl_publish(doa, ch0_mask, ch1_mask,
-                       mic_frontend_get_beam_azimuth(&mic_frontend_state, mode));
+                       mic_frontend_get_beam_azimuth(&mic_frontend_state, mode),
+                       mic_frontend_conversation_lapsed(&mic_frontend_state));
 }
 
 static void stage_delay(frame_data_t *frame_data)
@@ -212,7 +245,9 @@ static void initialize_pipeline_stages(void)
 {
     frame_pool_init(&frame_pool, sizeof(frame_data_t), AP_T1_FRAME_COUNT);
     mic_frontend_init(&mic_frontend_state);
+    audio_ctrl_set_ch1_taps(AP_CH1_TAPS);
     doa_init(&doa_state);
+    mic_hpf_init(&mic_hpf);
 
 #if (appconfINPUT_SAMPLES_MIC_DELAY_MS != 0)
     configASSERT(AP_INPUT_SAMPLES_MIC_DELAY_BUF_SIZE_BYTES > 0);

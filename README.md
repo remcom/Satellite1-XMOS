@@ -36,6 +36,21 @@ talker has been more than 15 degrees off them for ~0.5 s of speech, at most ever
 where they are. Each re-steer makes the AEC and IC re-adapt, as a pair switch does.
 See `src/audio/beamformer.h`.
 
+Steering from any speech also follows a TV, and is too slow for a wake word from a
+new direction. So the host can report wake words (`AUDIO_SERVICER_CMD_WAKE_EVENT`):
+the device then locates the wake word from the DOA results of the last ~1.5 s and
+steers the beams (or, in `MIC_MODE_AUTO_PAIR`, picks the pair facing it) at once,
+and does not re-steer until the conversation ends. With the steering policy
+(`AUDIO_SERVICER_CMD_STEER_POLICY`) set to wake words only, other speech never moves
+the beams: a TV stays in the blocking beam, where the IC cancels it.
+
+The right output channel carries a signal without the AGC, for a wake word engine:
+AEC+IC+NS by default, or AEC+IC or AEC only (`AUDIO_SERVICER_CMD_CH1_TAP`). The IC
+stops adapting within a frame or two of speech onset
+(`AUDIO_SERVICER_CMD_IC_FAST_HOLD`), so it does not learn to cancel the start of a
+wake word when its noise reference also hears the talker. A 100 Hz high-pass
+(`AUDIO_SERVICER_CMD_HPF`) removes rumble below the speech band before the AEC.
+
 The mic gain (default 20 dB, range 0..30 dB) is applied after the AEC, so loud echo is
 not clipped before the AEC can cancel it.
 
