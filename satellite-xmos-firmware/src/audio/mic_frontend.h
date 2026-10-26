@@ -61,6 +61,61 @@ typedef enum {
 /* mic_frontend_get_beam_azimuth() outside MIC_MODE_BEAM */
 #define MIC_FRONTEND_NO_BEAM                0xFFFF
 
+/*
+ * What may move the BEAM steering and the AUTO_PAIR selection. A wake word
+ * (mic_frontend_wake_word()) steers at once in FOLLOW_SPEECH and WAKE_WORD.
+ */
+typedef enum {
+    STEER_POLICY_FOLLOW_SPEECH = 0, /* any speech, after MIC_FRONTEND_AUTO_STABLE_FRAMES */
+    STEER_POLICY_WAKE_WORD     = 1, /* only wake words: a TV or radio cannot pull the beam */
+    STEER_POLICY_FIXED         = 2, /* nothing, the steering stays where it is */
+    STEER_POLICY_COUNT
+} steer_policy_t;
+
+/*
+ * Wake word steering: DOA results of the last MIC_FRONTEND_WAKE_WINDOW_FRAMES
+ * are kept. A wake word is ~0.8 s long and is reported a few hundred ms after
+ * it ended (detection, I2S, resampler and SPI latency).
+ */
+#define MIC_FRONTEND_WAKE_WINDOW_FRAMES     100 /* ~1.5 s */
+/* At most this many of them, the most recent (tile 1 is short of RAM) */
+#define MIC_FRONTEND_WAKE_HISTORY           80
+/* The wake word direction is the mean of the largest group of DOA results within this angle ... */
+#define MIC_FRONTEND_WAKE_CLUSTER_DEG       30
+/* ... which needs at least this many of them (~75 ms of located speech) ... */
+#define MIC_FRONTEND_WAKE_MIN_RESULTS       5
+/* ... and at least this share of the confidence of all results in the window */
+#define MIC_FRONTEND_WAKE_MIN_SHARE         0.25f
+/*
+ * Groups are ranked by confidence * (1 - NOVELTY * share of idle speech from
+ * their direction over the last ~MIC_FRONTEND_IDLE_DOA_FRAMES located frames).
+ * A TV that talks all day loses up to half its weight, so a wake word said
+ * while it talks wins with about as many located frames as the TV had in the
+ * window. A talker who always speaks from the same place still wins over a
+ * stray voice with half their frames.
+ */
+#define MIC_FRONTEND_WAKE_NOVELTY           0.5f
+#define MIC_FRONTEND_IDLE_DOA_FRAMES        2000 /* ~30 s of located speech */
+#define MIC_FRONTEND_IDLE_DOA_BINS          36   /* 10 degrees each */
+/*
+ * No speech-driven re-steering while a conversation is active
+ * (mic_frontend_set_steering()), for at most this long in case its end is
+ * never reported.
+ */
+#define MIC_FRONTEND_CONVERSATION_MAX_FRAMES 4000 /* 60 s */
+
+/* High-pass filter on the two pipeline channels, below the wake word and speech band */
+#define MIC_HPF_CUTOFF_HZ                   100
+#define MIC_HPF_SAMPLE_RATE                 16000
+#define MIC_HPF_CHANNELS                    2
+
+typedef struct {
+    uint32_t frame;             /* mic_frontend_state_t.frame_count when it was produced */
+    int16_t x_q14;              /* unit vector of the azimuth, Q14: cos, sin */
+    int16_t y_q14;
+    uint8_t confidence;
+} mic_frontend_doa_entry_t;
+
 typedef struct {
     uint8_t ch0;                 /* mic_idx_t feeding channel 0 (the IC target) */
     uint8_t ch1;                 /* mic_idx_t feeding channel 1 */
@@ -71,8 +126,31 @@ typedef struct {
     uint32_t beam_away_frames;   /* BEAM: speech frames with the DOA outside the hold angle */
     float beam_away_x;           /* BEAM: sum of their unit vectors, for the mean direction */
     float beam_away_y;
+    uint8_t steer_policy;        /* steer_policy_t */
+    uint8_t conversation;        /* a conversation holds the steering (within its time limit) */
+    uint32_t conversation_frames;
+    uint32_t frame_count;        /* frames since init, stamps the DOA history */
+    /* The last MIC_FRONTEND_WAKE_HISTORY DOA results (updated frames only), a ring */
+    mic_frontend_doa_entry_t doa_history[MIC_FRONTEND_WAKE_HISTORY];
+    uint32_t doa_history_next;
+    uint32_t doa_history_len;
+    float idle_doa[MIC_FRONTEND_IDLE_DOA_BINS];    /* where idle speech came from, decaying histogram */
+    uint16_t wake_azimuth_deg;   /* direction of the last located wake word, MIC_FRONTEND_NO_BEAM if none */
     beamformer_t beam;
 } mic_frontend_state_t;
+
+/* Second order Butterworth high-pass per channel, coefficients Q28 */
+typedef struct {
+    int32_t b0;
+    int32_t b1;
+    int32_t b2;
+    int32_t a1;
+    int32_t a2;
+    int32_t x1[MIC_HPF_CHANNELS];
+    int32_t x2[MIC_HPF_CHANNELS];
+    int32_t y1[MIC_HPF_CHANNELS];
+    int32_t y2[MIC_HPF_CHANNELS];
+} mic_hpf_t;
 
 void mic_frontend_init(mic_frontend_state_t *state);
 
@@ -83,11 +161,38 @@ void mic_frontend_init(mic_frontend_state_t *state);
  *
  * Entering BEAM points the beams at the DOA result straight away if it is
  * valid, without a crossfade, and does not wait out the dwell of an earlier
- * switch: the mode change makes the AEC and IC re-adapt anyway.
+ * switch: the mode change makes the AEC and IC re-adapt anyway. Under
+ * STEER_POLICY_WAKE_WORD it points at the last located wake word instead (the
+ * DOA if there was none yet), under STEER_POLICY_FIXED it keeps the steering.
+ *
+ * Also records this frame's DOA result for mic_frontend_wake_word(), in every mode.
  */
 void mic_frontend_update(mic_frontend_state_t *state,
                          mic_mode_t mode,
                          const doa_result_t *doa);
+
+/**
+ * Sets the steering policy and whether a conversation is active. Call once per
+ * frame before mic_frontend_update(). While a conversation is active the talker
+ * is known, so speech does not re-steer; after
+ * MIC_FRONTEND_CONVERSATION_MAX_FRAMES the hold lapses until the next
+ * conversation.
+ */
+void mic_frontend_set_steering(mic_frontend_state_t *state,
+                               steer_policy_t policy,
+                               int conversation_active);
+
+/**
+ * A wake word was just detected. Locates it from the DOA results of the last
+ * MIC_FRONTEND_WAKE_WINDOW_FRAMES and, unless the policy is
+ * STEER_POLICY_FIXED, steers BEAM there at once (crossfaded over the next
+ * frame, without the stable time and the dwell) or switches AUTO_PAIR to the
+ * mic facing it. Call after mic_frontend_update() for the frame.
+ *
+ * \return 1 if the wake word was located, 0 if there were too few or too
+ *         scattered DOA results
+ */
+int mic_frontend_wake_word(mic_frontend_state_t *state, mic_mode_t mode);
 
 /**
  * Writes the two pipeline channels for the given mode. Outside BEAM it still
@@ -112,6 +217,15 @@ void mic_frontend_get_masks(const mic_frontend_state_t *state,
 
 /** Steering azimuth in degrees in MIC_MODE_BEAM, else MIC_FRONTEND_NO_BEAM. */
 uint16_t mic_frontend_get_beam_azimuth(const mic_frontend_state_t *state, mic_mode_t mode);
+
+void mic_hpf_init(mic_hpf_t *hpf);
+/** Clears the filter history, e.g. before the filter is used again after a pause. */
+void mic_hpf_reset(mic_hpf_t *hpf);
+/**
+ * Filters MIC_HPF_CHANNELS consecutive channels of frame_count samples in
+ * place, saturating to +-INT32_MAX.
+ */
+void mic_hpf_process(mic_hpf_t *hpf, int32_t *samples, size_t frame_count);
 
 /** Linear Q16 gain for a gain in dB. */
 int32_t mic_gain_db_to_q16(unsigned gain_db);

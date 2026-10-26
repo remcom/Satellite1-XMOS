@@ -9,6 +9,14 @@ static volatile uint32_t mic_gain_db;
 static volatile int32_t mic_gain_q16;
 static volatile uint32_t mic_mode;
 
+static volatile uint32_t ch1_tap;
+static volatile uint32_t ic_fast_hold;
+static volatile uint32_t hpf;
+static volatile uint32_t steer_policy;
+static volatile uint32_t conversation;
+/* Incremented after conversation is set by a wake word */
+static volatile uint32_t wake_count;
+
 /* azimuth[15:0] | confidence[23:16] | valid[24] */
 static volatile uint32_t doa_word;
 /* Incremented after doa_word whenever the DOA produced a new result */
@@ -24,6 +32,12 @@ void audio_ctrl_init(unsigned gain_db, mic_mode_t mode)
     if (audio_ctrl_set_mic_mode(mode) != 0) {
         (void) audio_ctrl_set_mic_mode(MIC_MODE_PAIR_EW);
     }
+    ch1_tap = CH1_TAP_NS;
+    ic_fast_hold = 1;
+    hpf = 1;
+    steer_policy = STEER_POLICY_FOLLOW_SPEECH;
+    conversation = 0;
+    wake_count = 0;
     doa_word = 0;
     doa_update_count = 0;
     frontend_word = MIC_MASK(MIC_IDX_EAST) | (MIC_MASK(MIC_IDX_WEST) << 8) |
@@ -62,6 +76,77 @@ int audio_ctrl_set_mic_mode(unsigned mode)
 mic_mode_t audio_ctrl_get_mic_mode(void)
 {
     return (mic_mode_t) mic_mode;
+}
+
+int audio_ctrl_set_ch1_tap(unsigned tap)
+{
+    if (tap >= CH1_TAP_COUNT) {
+        return -1;
+    }
+    ch1_tap = tap;
+    return 0;
+}
+
+ch1_tap_t audio_ctrl_get_ch1_tap(void)
+{
+    return (ch1_tap_t) ch1_tap;
+}
+
+void audio_ctrl_set_ic_fast_hold(unsigned enable)
+{
+    ic_fast_hold = enable ? 1 : 0;
+}
+
+unsigned audio_ctrl_get_ic_fast_hold(void)
+{
+    return ic_fast_hold;
+}
+
+uint32_t audio_ctrl_get_t0_word(void)
+{
+    return (ch1_tap & 0xFF) | (ic_fast_hold << 8);
+}
+
+void audio_ctrl_set_hpf(unsigned enable)
+{
+    hpf = enable ? 1 : 0;
+}
+
+unsigned audio_ctrl_get_hpf(void)
+{
+    return hpf;
+}
+
+int audio_ctrl_set_steer_policy(unsigned policy)
+{
+    if (policy >= STEER_POLICY_COUNT) {
+        return -1;
+    }
+    steer_policy = policy;
+    return 0;
+}
+
+steer_policy_t audio_ctrl_get_steer_policy(void)
+{
+    return (steer_policy_t) steer_policy;
+}
+
+void audio_ctrl_wake_event(unsigned active)
+{
+    conversation = active ? 1 : 0;
+    if (active) {
+        wake_count = wake_count + 1;
+    }
+}
+
+uint32_t audio_ctrl_get_wake_count(void)
+{
+    return wake_count;
+}
+
+unsigned audio_ctrl_get_conversation(void)
+{
+    return conversation;
 }
 
 void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_mask,

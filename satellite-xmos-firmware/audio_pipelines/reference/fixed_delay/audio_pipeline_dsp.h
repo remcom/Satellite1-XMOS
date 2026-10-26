@@ -51,13 +51,16 @@ typedef struct {
     int32_t vnr_pred_flag;
     float_s32_t max_ref_energy;
     float_s32_t aec_corr_factor;
+    /* Tile 0 settings from audio_ctrl on tile 1, see AUDIO_CTRL_T0_*() */
+    uint32_t t0_ctrl;
     /* Tile 1 stage stats, passed on to tile 0 where the stats servicer reads them */
     stage_stats_t1_report_t t1_stats;
 
     /*
      * The speaker reference until the AEC has run. Afterwards reused:
      *   [0] AEC+IC output (appconfAUDIO_PIPELINE_STORE_IC_AUDIO)
-     *   [1] AEC+IC+NS output (appconfAUDIO_PIPELINE_STORE_NS_AUDIO)
+     *   [1] AEC+IC+NS output (appconfAUDIO_PIPELINE_STORE_NS_AUDIO), or the
+     *       AEC output with CH1_TAP_AEC
      * Last in the frame, so tile 1 can leave it out when tile 0 does not read it.
      */
     int32_t DWORD_ALIGNED aec_reference_audio_samples[appconfAUDIO_PIPELINE_REF_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];

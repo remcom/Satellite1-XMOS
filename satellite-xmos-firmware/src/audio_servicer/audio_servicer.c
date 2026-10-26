@@ -16,11 +16,16 @@
 static uint32_t doa_read_count;
 
 static control_cmd_info_t audio_servicer_resid_cmd_map[] = {
-    { AUDIO_SERVICER_CMD_MIC_GAIN, 1, sizeof(uint8_t), CMD_READ_WRITE },
-    { AUDIO_SERVICER_CMD_MIC_MODE, 1, sizeof(uint8_t), CMD_READ_WRITE },
-    { AUDIO_SERVICER_CMD_DOA,      4, sizeof(uint8_t), CMD_READ_ONLY  },
-    { AUDIO_SERVICER_CMD_MIC_PAIR, 2, sizeof(uint8_t), CMD_READ_ONLY  },
-    { AUDIO_SERVICER_CMD_BEAM,     2, sizeof(uint8_t), CMD_READ_ONLY  },
+    { AUDIO_SERVICER_CMD_MIC_GAIN,     1, sizeof(uint8_t), CMD_READ_WRITE },
+    { AUDIO_SERVICER_CMD_MIC_MODE,     1, sizeof(uint8_t), CMD_READ_WRITE },
+    { AUDIO_SERVICER_CMD_DOA,          4, sizeof(uint8_t), CMD_READ_ONLY  },
+    { AUDIO_SERVICER_CMD_MIC_PAIR,     2, sizeof(uint8_t), CMD_READ_ONLY  },
+    { AUDIO_SERVICER_CMD_BEAM,         2, sizeof(uint8_t), CMD_READ_ONLY  },
+    { AUDIO_SERVICER_CMD_CH1_TAP,      1, sizeof(uint8_t), CMD_READ_WRITE },
+    { AUDIO_SERVICER_CMD_IC_FAST_HOLD, 1, sizeof(uint8_t), CMD_READ_WRITE },
+    { AUDIO_SERVICER_CMD_HPF,          1, sizeof(uint8_t), CMD_READ_WRITE },
+    { AUDIO_SERVICER_CMD_STEER_POLICY, 1, sizeof(uint8_t), CMD_READ_WRITE },
+    { AUDIO_SERVICER_CMD_WAKE_EVENT,   1, sizeof(uint8_t), CMD_READ_WRITE },
 };
 
 //-----------------Servicer read write callback functions-----------------------//
@@ -79,6 +84,26 @@ static control_ret_t audio_servicer_read_cmd(control_resid_t resid, control_cmd_
         break;
     }
 
+    case AUDIO_SERVICER_CMD_CH1_TAP:
+        payload_ptr[0] = (uint8_t) audio_ctrl_get_ch1_tap();
+        break;
+
+    case AUDIO_SERVICER_CMD_IC_FAST_HOLD:
+        payload_ptr[0] = (uint8_t) audio_ctrl_get_ic_fast_hold();
+        break;
+
+    case AUDIO_SERVICER_CMD_HPF:
+        payload_ptr[0] = (uint8_t) audio_ctrl_get_hpf();
+        break;
+
+    case AUDIO_SERVICER_CMD_STEER_POLICY:
+        payload_ptr[0] = (uint8_t) audio_ctrl_get_steer_policy();
+        break;
+
+    case AUDIO_SERVICER_CMD_WAKE_EVENT:
+        payload_ptr[0] = (uint8_t) audio_ctrl_get_conversation();
+        break;
+
     default:
         ret = CONTROL_BAD_COMMAND;
         break;
@@ -117,6 +142,42 @@ static control_ret_t audio_servicer_write_cmd(control_resid_t resid, control_cmd
     case AUDIO_SERVICER_CMD_MIC_MODE:
         if (audio_ctrl_set_mic_mode(payload[0]) != 0) {
             ret = SERVICER_WRONG_PAYLOAD;
+        }
+        break;
+
+    case AUDIO_SERVICER_CMD_CH1_TAP:
+        if (audio_ctrl_set_ch1_tap(payload[0]) != 0) {
+            ret = SERVICER_WRONG_PAYLOAD;
+        }
+        break;
+
+    case AUDIO_SERVICER_CMD_IC_FAST_HOLD:
+        if (payload[0] > 1) {
+            ret = SERVICER_WRONG_PAYLOAD;
+        } else {
+            audio_ctrl_set_ic_fast_hold(payload[0]);
+        }
+        break;
+
+    case AUDIO_SERVICER_CMD_HPF:
+        if (payload[0] > 1) {
+            ret = SERVICER_WRONG_PAYLOAD;
+        } else {
+            audio_ctrl_set_hpf(payload[0]);
+        }
+        break;
+
+    case AUDIO_SERVICER_CMD_STEER_POLICY:
+        if (audio_ctrl_set_steer_policy(payload[0]) != 0) {
+            ret = SERVICER_WRONG_PAYLOAD;
+        }
+        break;
+
+    case AUDIO_SERVICER_CMD_WAKE_EVENT:
+        if (payload[0] > 1) {
+            ret = SERVICER_WRONG_PAYLOAD;
+        } else {
+            audio_ctrl_wake_event(payload[0]);
         }
         break;
 
