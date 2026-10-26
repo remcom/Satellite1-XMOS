@@ -7,9 +7,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "audio/audio_ctrl.h"
 #include "audio/beamformer.h"
 #include "audio/doa.h"
 #include "audio/mic_frontend.h"
+#include "audio/vnr_hold.h"
 
 #define PI 3.14159265358979
 #define SPEED_OF_SOUND 343.0
@@ -684,6 +686,314 @@ static void test_beam_mode_toggle(void)
     }
 }
 
+static void idle_beam(mic_frontend_state_t *st, unsigned frames)
+{
+    const doa_result_t none = {0};
+    for (unsigned i = 0; i < frames; i++) {
+        mic_frontend_update(st, MIC_MODE_BEAM, &none);
+    }
+}
+
+static void test_wake_word_steering(void)
+{
+    mic_frontend_state_t st;
+    mic_frontend_init(&st);
+    feed_beam_doa(&st, 0, 1);
+    idle_beam(&st, MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES);
+
+    /* a wake word from a new direction steers at once, without the stable time or the dwell */
+    feed_beam_doa(&st, 120, 10);
+    CHECK(st.beam.azimuth_deg == 0, "speech alone steered too early");
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
+    CHECK(st.beam.azimuth_deg == 120, "wake word steered to %u, expected 120", st.beam.azimuth_deg);
+    CHECK(st.beam.fade, "a wake word steer must crossfade");
+    CHECK(st.wake_azimuth_deg == 120, "wake direction %u", st.wake_azimuth_deg);
+
+    /* ... also right after an earlier steer, and to the mean across 0 degrees */
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    for (int i = 0; i < 10; i++) {
+        feed_beam_doa(&st, (i & 1) ? 355 : 15, 1);
+    }
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
+    CHECK(st.beam.azimuth_deg == 5, "wake word steered to %u, expected 5", st.beam.azimuth_deg);
+
+    /* a wake word within the hold angle leaves the beam alone */
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    feed_beam_doa(&st, 5 + MIC_FRONTEND_BEAM_HOLD_DEG, 10);
+    st.beam.fade = 0;
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
+    CHECK(st.beam.azimuth_deg == 5 && !st.beam.fade, "a small correction moved the beam to %u",
+          st.beam.azimuth_deg);
+
+    /* too few located frames, or too old ones, give no direction */
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    feed_beam_doa(&st, 200, MIC_FRONTEND_WAKE_MIN_RESULTS - 1);
+    CHECK(!mic_frontend_wake_word(&st, MIC_MODE_BEAM), "located a wake word from too few results");
+    feed_beam_doa(&st, 200, 1);
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 200,
+          "beam at %u, expected 200", st.beam.azimuth_deg);
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    CHECK(!mic_frontend_wake_word(&st, MIC_MODE_BEAM), "used DOA results older than the window");
+
+    /* results spread all around (reverb, several talkers at once) give no direction */
+    for (int i = 0; i < 40; i++) {
+        feed_beam_doa(&st, (unsigned)(i * 45) % 360, 1);
+    }
+    CHECK(!mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 200,
+          "scattered results moved the beam to %u", st.beam.azimuth_deg);
+
+    /* the history keeps the most recent results */
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    feed_beam_doa(&st, 150, 15);
+    feed_beam_doa(&st, 300, MIC_FRONTEND_WAKE_HISTORY);
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 300,
+          "beam at %u, expected 300", st.beam.azimuth_deg);
+}
+
+static void test_wake_word_beside_tv(void)
+{
+    mic_frontend_state_t st;
+    mic_frontend_init(&st);
+    feed_beam_doa(&st, 0, 1);
+
+    /* without a TV, the larger group wins */
+    idle_beam(&st, MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES);
+    feed_beam_doa(&st, 270, 20);
+    feed_beam_doa(&st, 60, 35);
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 60,
+          "beam at %u, expected the wake word at 60", st.beam.azimuth_deg);
+
+    /* a TV that talks all the time loses to a wake word with as many located frames ... */
+    mic_frontend_set_steering(&st, STEER_POLICY_WAKE_WORD, 0);
+    feed_beam_doa(&st, 200, MIC_FRONTEND_IDLE_DOA_FRAMES);
+    feed_beam_doa(&st, 110, MIC_FRONTEND_WAKE_HISTORY / 2);
+    feed_beam_doa(&st, 200, MIC_FRONTEND_WAKE_HISTORY / 4);
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 110,
+          "beam at %u, expected the wake word at 110 beside the TV", st.beam.azimuth_deg);
+    /* ... though not to one that hardly produced any */
+    feed_beam_doa(&st, 200, MIC_FRONTEND_WAKE_HISTORY - 8);
+    feed_beam_doa(&st, 30, 8);
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 200,
+          "beam at %u, expected the TV to win", st.beam.azimuth_deg);
+
+    /* the talker's own usual place wins over a stray voice with half the frames */
+    mic_frontend_init(&st);
+    feed_beam_doa(&st, 0, 1);
+    feed_beam_doa(&st, 90, MIC_FRONTEND_IDLE_DOA_FRAMES);
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    feed_beam_doa(&st, 250, 15);
+    feed_beam_doa(&st, 90, 32);
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 90,
+          "beam at %u, expected the usual talker at 90", st.beam.azimuth_deg);
+}
+
+static void test_steer_policies(void)
+{
+    mic_frontend_state_t st;
+    mic_frontend_init(&st);
+    feed_beam_doa(&st, 0, 1);
+    idle_beam(&st, MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES);
+
+    /* wake word only: a TV talking for minutes does not pull the beam ... */
+    mic_frontend_set_steering(&st, STEER_POLICY_WAKE_WORD, 0);
+    feed_beam_doa(&st, 200, 20 * MIC_FRONTEND_AUTO_STABLE_FRAMES);
+    CHECK(st.beam.azimuth_deg == 0, "the TV pulled the beam to %u", st.beam.azimuth_deg);
+    /* ... a wake word does */
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    feed_beam_doa(&st, 90, 20);
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 90,
+          "beam at %u, expected the wake word at 90", st.beam.azimuth_deg);
+    /* and re-entering the beam mode returns to the wake word, not to the last DOA */
+    mic_frontend_update(&st, MIC_MODE_PAIR_EW, &(doa_result_t){0});
+    feed_beam_doa(&st, 200, 1);
+    CHECK(st.beam.azimuth_deg == 90, "re-entered at %u, expected the wake word at 90", st.beam.azimuth_deg);
+
+    /* fixed: neither speech nor wake words move it, re-entering keeps it */
+    mic_frontend_set_steering(&st, STEER_POLICY_FIXED, 0);
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    feed_beam_doa(&st, 300, 3 * MIC_FRONTEND_AUTO_STABLE_FRAMES);
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
+    CHECK(st.beam.azimuth_deg == 90, "fixed beam moved to %u", st.beam.azimuth_deg);
+    CHECK(st.wake_azimuth_deg == 300, "fixed policy must still record the wake word, %u", st.wake_azimuth_deg);
+    mic_frontend_update(&st, MIC_MODE_PAIR_EW, &(doa_result_t){0});
+    feed_beam_doa(&st, 300, 1);
+    CHECK(st.beam.azimuth_deg == 90, "fixed beam re-entered at %u", st.beam.azimuth_deg);
+
+    /* an unknown policy falls back to following speech */
+    mic_frontend_set_steering(&st, STEER_POLICY_COUNT, 0);
+    CHECK(st.steer_policy == STEER_POLICY_FOLLOW_SPEECH, "policy %u", st.steer_policy);
+}
+
+static void test_conversation_hold(void)
+{
+    mic_frontend_state_t st;
+    mic_frontend_init(&st);
+    feed_beam_doa(&st, 0, 1);
+    idle_beam(&st, MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES);
+
+    /* following speech, a conversation holds the beam on the talker */
+    for (int i = 0; i < 3 * MIC_FRONTEND_AUTO_STABLE_FRAMES; i++) {
+        mic_frontend_set_steering(&st, STEER_POLICY_FOLLOW_SPEECH, 1);
+        feed_beam_doa(&st, 180, 1);
+    }
+    CHECK(st.beam.azimuth_deg == 0, "speech re-steered during a conversation to %u", st.beam.azimuth_deg);
+    /* ... and the count does not carry over to after it */
+    mic_frontend_set_steering(&st, STEER_POLICY_FOLLOW_SPEECH, 0);
+    feed_beam_doa(&st, 180, MIC_FRONTEND_AUTO_STABLE_FRAMES - 1);
+    CHECK(st.beam.azimuth_deg == 0, "the conversation kept the count");
+    feed_beam_doa(&st, 180, 1);
+    CHECK(st.beam.azimuth_deg == 180, "beam at %u, expected 180", st.beam.azimuth_deg);
+
+    /* a conversation whose end is never reported lapses */
+    idle_beam(&st, MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES);
+    for (int i = 0; i < MIC_FRONTEND_CONVERSATION_MAX_FRAMES; i++) {
+        mic_frontend_set_steering(&st, STEER_POLICY_FOLLOW_SPEECH, 1);
+        idle_beam(&st, 1);
+    }
+    for (int i = 0; i < MIC_FRONTEND_AUTO_STABLE_FRAMES; i++) {
+        mic_frontend_set_steering(&st, STEER_POLICY_FOLLOW_SPEECH, 1);
+        feed_beam_doa(&st, 45, 1);
+    }
+    CHECK(st.beam.azimuth_deg == 45, "an endless conversation held the beam at %u", st.beam.azimuth_deg);
+}
+
+static void test_wake_word_auto_pair(void)
+{
+    mic_frontend_state_t st;
+    mic_frontend_init(&st);
+    const doa_result_t doa = { .azimuth_deg = 170, .confidence = 200, .valid = 1, .updated = 1 };
+    mic_frontend_set_steering(&st, STEER_POLICY_WAKE_WORD, 0);
+    for (int i = 0; i < 3 * MIC_FRONTEND_AUTO_STABLE_FRAMES; i++) {
+        mic_frontend_update(&st, MIC_MODE_AUTO_PAIR, &doa);
+    }
+    CHECK(st.ch0 == MIC_IDX_EAST, "speech switched the pair under the wake word policy");
+    /* the wake word picks the mic facing it, even between two mics */
+    const doa_result_t between = { .azimuth_deg = 220, .confidence = 200, .valid = 1, .updated = 1 };
+    for (int i = 0; i < 10; i++) {
+        mic_frontend_update(&st, MIC_MODE_AUTO_PAIR, &between);
+    }
+    CHECK(mic_frontend_wake_word(&st, MIC_MODE_AUTO_PAIR), "the wake word was not located");
+    CHECK(st.ch0 == MIC_IDX_SOUTH && st.ch1 == MIC_IDX_NORTH, "pair %u/%u, expected S/N", st.ch0, st.ch1);
+}
+
+/* Gain of the high-pass at freq_hz in dB, after its transient has settled */
+static double hpf_gain_db(double freq_hz)
+{
+    static int32_t x[2 * DOA_FRAME_SIZE];
+    mic_hpf_t hpf;
+    mic_hpf_init(&hpf);
+    double in = 0;
+    double out = 0;
+    for (unsigned frame = 0; frame < 60; frame++) {
+        for (int i = 0; i < DOA_FRAME_SIZE; i++) {
+            const double t = (double)(frame * DOA_FRAME_SIZE + i) / MIC_HPF_SAMPLE_RATE;
+            x[i] = (int32_t)(0.5 * sin(2.0 * PI * freq_hz * t) * 2147483647.0);
+            x[DOA_FRAME_SIZE + i] = -x[i];
+        }
+        if (frame >= 40) {
+            for (int i = 0; i < DOA_FRAME_SIZE; i++) {
+                in += (double)x[i] * x[i];
+            }
+        }
+        mic_hpf_process(&hpf, x, DOA_FRAME_SIZE);
+        if (frame >= 40) {
+            for (int i = 0; i < DOA_FRAME_SIZE; i++) {
+                out += (double)x[i] * x[i];
+                CHECK(x[DOA_FRAME_SIZE + i] == -x[i] || abs(x[DOA_FRAME_SIZE + i] + x[i]) <= 1,
+                      "channels filtered differently");
+            }
+        }
+    }
+    return 10.0 * log10(out / in);
+}
+
+static void test_hpf(void)
+{
+    const double cut = hpf_gain_db(MIC_HPF_CUTOFF_HZ);
+    CHECK(fabs(cut + 3.0) < 0.3, "%d Hz: %.2f dB, expected -3 dB", MIC_HPF_CUTOFF_HZ, cut);
+    const double low = hpf_gain_db(25);
+    CHECK(low < -22.0, "25 Hz: %.2f dB, expected about -24 dB", low);
+    const double voice = hpf_gain_db(300);
+    CHECK(fabs(voice) < 0.15, "300 Hz: %.2f dB, expected about 0 dB", voice);
+    const double high = hpf_gain_db(4000);
+    CHECK(fabs(high) < 0.05, "4 kHz: %.2f dB, expected 0 dB", high);
+    printf("high-pass: 25 Hz %.1f dB, %d Hz %.1f dB, 300 Hz %.2f dB\n", low, MIC_HPF_CUTOFF_HZ, cut, voice);
+
+    /* DC goes, full scale input saturates instead of wrapping */
+    static int32_t x[2 * DOA_FRAME_SIZE];
+    mic_hpf_t hpf;
+    mic_hpf_init(&hpf);
+    for (int frame = 0; frame < 20; frame++) {
+        for (int i = 0; i < 2 * DOA_FRAME_SIZE; i++) {
+            x[i] = (frame == 0 && i < 8) ? -INT32_MAX : INT32_MAX / 2;
+        }
+        mic_hpf_process(&hpf, x, DOA_FRAME_SIZE);
+    }
+    CHECK(abs(x[DOA_FRAME_SIZE - 1]) < 1000, "DC left after 0.3 s: %d", x[DOA_FRAME_SIZE - 1]);
+    mic_hpf_reset(&hpf);
+    for (int i = 0; i < 2 * DOA_FRAME_SIZE; i++) {
+        x[i] = (i & 1) ? INT32_MAX : -INT32_MAX;
+    }
+    mic_hpf_process(&hpf, x, DOA_FRAME_SIZE);
+    int wrapped = 0;
+    for (int i = 2; i < DOA_FRAME_SIZE; i++) {
+        wrapped += ((i & 1) ? x[i] < 0 : x[i] > 0);
+    }
+    CHECK(wrapped == 0, "%d samples wrapped around", wrapped);
+}
+
+static void test_vnr_hold(void)
+{
+    /* noise to speech: the fwk_voice EMA needs ~23 frames to reach 0.5, the hold 1..2 */
+    vnr_hold_t hold;
+    vnr_hold_init(&hold, 0.05f);
+    int frames = 0;
+    while (vnr_hold_update(&hold, 0.8f) < 0.5f && frames < 100) {
+        frames++;
+    }
+    CHECK(frames + 1 <= 2, "the hold took %d frames to reach 0.5", frames + 1);
+    double ema = 0.05;
+    int ema_frames = 0;
+    while (ema < 0.5 && ema_frames < 100) {
+        ema = 0.97 * ema + 0.03 * 0.95;
+        ema_frames++;
+    }
+    CHECK(ema_frames >= 20, "the reference EMA took only %d frames", ema_frames);
+
+    /* falling, it decays like the fwk_voice EMA */
+    vnr_hold_init(&hold, 0.9f);
+    const float v = vnr_hold_update(&hold, 0.1f);
+    CHECK(fabsf(v - (0.97f * 0.9f + 0.03f * 0.1f)) < 1e-6f, "release step gives %f", v);
+}
+
+static void test_audio_ctrl(void)
+{
+    audio_ctrl_init(20, MIC_MODE_BEAM);
+    CHECK(audio_ctrl_get_ch1_tap() == CH1_TAP_NS, "default tap %u", audio_ctrl_get_ch1_tap());
+    CHECK(audio_ctrl_get_ic_fast_hold() == 1 && audio_ctrl_get_hpf() == 1, "fast hold and HPF default on");
+    CHECK(audio_ctrl_get_steer_policy() == STEER_POLICY_FOLLOW_SPEECH, "default policy");
+
+    CHECK(audio_ctrl_set_ch1_tap(CH1_TAP_COUNT) != 0, "accepted an unknown tap");
+    CHECK(audio_ctrl_set_ch1_tap(CH1_TAP_AEC) == 0, "rejected the AEC tap");
+    audio_ctrl_set_ic_fast_hold(0);
+    uint32_t w = audio_ctrl_get_t0_word();
+    CHECK(AUDIO_CTRL_T0_CH1_TAP(w) == CH1_TAP_AEC && !AUDIO_CTRL_T0_IC_FAST_HOLD(w), "t0 word %x", w);
+    audio_ctrl_set_ch1_tap(CH1_TAP_IC);
+    audio_ctrl_set_ic_fast_hold(1);
+    w = audio_ctrl_get_t0_word();
+    CHECK(AUDIO_CTRL_T0_CH1_TAP(w) == CH1_TAP_IC && AUDIO_CTRL_T0_IC_FAST_HOLD(w), "t0 word %x", w);
+
+    CHECK(audio_ctrl_set_steer_policy(STEER_POLICY_COUNT) != 0, "accepted an unknown policy");
+    CHECK(audio_ctrl_set_steer_policy(STEER_POLICY_WAKE_WORD) == 0 &&
+          audio_ctrl_get_steer_policy() == STEER_POLICY_WAKE_WORD, "policy not set");
+
+    const uint32_t count = audio_ctrl_get_wake_count();
+    audio_ctrl_wake_event(1);
+    CHECK(audio_ctrl_get_wake_count() == count + 1 && audio_ctrl_get_conversation(), "wake event");
+    audio_ctrl_wake_event(0);
+    CHECK(audio_ctrl_get_wake_count() == count + 1 && !audio_ctrl_get_conversation(), "end of conversation");
+}
+
 static void test_gain(void)
 {
     CHECK(mic_gain_db_to_q16(0) == 65536, "0 dB is %d", mic_gain_db_to_q16(0));
@@ -733,6 +1043,14 @@ int main(void)
     test_beam_short_frames();
     test_beam_steering();
     test_beam_mode_toggle();
+    test_wake_word_steering();
+    test_wake_word_beside_tv();
+    test_steer_policies();
+    test_conversation_hold();
+    test_wake_word_auto_pair();
+    test_hpf();
+    test_vnr_hold();
+    test_audio_ctrl();
     test_gain();
 
     printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
