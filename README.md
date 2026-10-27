@@ -3,11 +3,14 @@
 ## Variants
 **satellite1_firmware_fixed_delay**
 
-Uses the 'Automatic Delay Estimation and Correction' pipeline of the sln_voice example repository.
+Uses the fixed-delay AEC/IC/NS/AGC pipeline. The configured static delay is
+currently zero; this variant does not run automatic delay estimation.
 
 **satellite1_firmware_bypass**
 
-A variant which bypasses the AEC/IC/NS/AGC stages. Hence, the mic signal (after the mic front end and mic gain) is streamed to the ESP32-S3.
+A variant which bypasses the AEC/IC/NS/AGC stages. The left output carries the
+mic signal after the mic front end, optional high-pass filter and mic gain;
+the right output carries speaker reference channel 1.
 
 ## Audio front end
 
@@ -34,7 +37,7 @@ at the last DOA straight away. After that they re-steer to the mean DOA once the
 talker has been more than 15 degrees off them for ~0.5 s of speech, at most every
 ~3 s, and only if those DOA results agree: two talkers taking turns leave the beams
 where they are. Each re-steer makes the AEC and IC re-adapt, as a pair switch does.
-See `src/audio/beamformer.h`.
+See [beamformer.h](satellite-xmos-firmware/src/audio/beamformer.h).
 
 Steering from any speech also follows a TV, and is too slow for a wake word from a
 new direction. So the host can report wake words (`AUDIO_SERVICER_CMD_WAKE_EVENT`):
@@ -128,13 +131,13 @@ It is recommended to install it into a virtual environment:
 
 ```bash
 python3.10 -m venv .venv
-source activate .venv/bin/activate
+source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
 for later builds simply activate the environment before calling cmake:
 ```bash
-source activate .venv/bin/activate
+source .venv/bin/activate
 ```
 
 
@@ -179,7 +182,23 @@ cd build
 ninja variant_name
 ```
 
+## Host tests
 
+From the repository root, with a host C compiler installed:
 
+```bash
+git submodule update --init --recursive modules/core
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements_tests.txt
+python -m pytest
+```
 
+Default discovery is limited to `tests/`; vendored libraries have their own test
+runners. The audio front-end test uses the pinned `lib_xcore_math` C reference
+kernels and is skipped if that submodule or a host compiler is missing. Host
+tests do not require the XMOS tools or a board and do not measure target timing.
 
+See the [codebase review](docs/codebase-review.md) for outstanding fixes, removal
+candidates and performance experiments, including the missing SPI DFU hardware
+coverage.
