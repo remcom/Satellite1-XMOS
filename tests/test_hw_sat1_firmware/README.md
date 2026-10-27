@@ -1,14 +1,14 @@
 # Satellite1 hardware tests
 
-These tests need a Satellite1 connected through an xTAG and the `orbit` test helpers.
-They are skipped unless `HW_TESTS` is set:
+There are currently no automated Satellite1 hardware tests in this repository.
+The obsolete USB DFU test and its `orbit` fixtures have been removed: the firmware
+supports DFU over SPI device control, not USB.
 
-```bash
-HW_TESTS=build_and_xrun pytest tests/test_hw_sat1_firmware
-```
+A replacement suite needs a Satellite1, an SPI host and a recovery/flashing path.
+It should exercise upgrade/upload round trips, incomplete final sectors,
+abort/retry, alternate-setting changes and malformed commands. See the
+[SPI protocol](../../docs/device-control-spi-protocol.md) and
+[code review](../../docs/codebase-review.md) for the outstanding cases.
 
-With `HW_TESTS=build_and_xrun` the session builds the `satellite1_firmware_fixed_delay`
-upgrade image and runs it with `xrun` before the tests start.
-
-USB DFU was removed from the firmware, so there is no USB DFU test any more. DFU now
-runs over SPI device control (see `docs/device-control-spi-protocol.md`).
+The host suite runs from the repository root with `python -m pytest`; it does not
+validate flash operations, RTOS scheduling or real-time audio on the board.
