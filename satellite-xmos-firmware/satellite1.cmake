@@ -18,6 +18,12 @@ foreach(FFVA_AP ${FFVA_PIPELINES_INT})
       set(PL_NAME ${FFVA_AP})
       list(APPEND FFVA_INT_COMPILE_DEFINITIONS appconfPIPELINE_BYPASS=0)
     endif()
+    if(${FFVA_AP} STREQUAL aec4)
+      list(APPEND FFVA_INT_COMPILE_DEFINITIONS
+          appconfAUDIO_PIPELINE_AEC_MICS=4
+          appconfAUDIO_PIPELINE_AEC_REF_CHANNELS=1
+      )
+    endif()
 
     #**********************
     # Tile Targets

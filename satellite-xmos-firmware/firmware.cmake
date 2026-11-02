@@ -51,6 +51,7 @@ option(SATELLITE1_VOICE_LIBS_O2 "Build the IC/NS/AGC/VNR libraries with -O2" ON)
 if(SATELLITE1_VOICE_LIBS_O2)
     foreach(VOICE_LIB
             fwk_voice_module_lib_ic
+            satellite1_lib_ic_aec4
             fwk_voice_module_lib_ns
             fwk_voice_module_lib_agc
             fwk_voice_module_lib_vnr_features
@@ -77,10 +78,13 @@ set(APP_COMMON_LINK_LIBRARIES
 # Firmware variants
 #  fixed_delay: AEC+IC+NS+AGC pipeline
 #  bypass:      fixed_delay build with all DSP stages skipped
+#  aec4:        fixed_delay with the AEC on all four mics and a mono
+#               reference; the mic front end (pairs, beam) runs after the AEC
 #**********************
 set(FFVA_PIPELINES_INT
     fixed_delay
     bypass
+    aec4
 )
 
 #**********************

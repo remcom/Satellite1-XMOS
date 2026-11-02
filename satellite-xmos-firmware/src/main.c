@@ -104,6 +104,34 @@ void speaker_pipeline_output(void *output_app_data,
     const uint32_t src_start = stage_stats_start();
 
     // down sample reference signal to 16kHz if needed 
+#if appconfAUDIO_PIPELINE_AEC_REF_CHANNELS == 1
+    /*
+     * Mono AEC reference: (L+R)/2, what the TAS2780 plays in its default
+     * "Mono (Left + Right)" mode. Both reference slots get it, so the playback
+     * energy the DOA gate measures is unchanged.
+     */
+    if (appconfI2S_AUDIO_SAMPLE_RATE == 3*appconfAUDIO_PIPELINE_SAMPLE_RATE) {
+        static voice_src_ds3_t src_state;
+
+        for( int frame=0; frame < frame_count; frame +=3 ){
+            int32_t in[3];
+            for (int k = 0; k < 3; k++) {
+                in[k] = (tmp[frame+k][0][0] >> 1) + (tmp[frame+k][0][1] >> 1);
+            }
+            const int32_t mono = voice_src_ds3(&src_state, in);
+            for (int ch = 0; ch < appconfAUDIO_PIPELINE_REF_CHANNELS; ch++) {
+                ref.samples[frame/3][ch] = mono;
+            }
+        }
+    } else {
+        for (int i = 0; i < appconfAUDIO_PIPELINE_FRAME_ADVANCE; i++) {
+            const int32_t mono = (tmp[i][0][0] >> 1) + (tmp[i][0][1] >> 1);
+            for (int ch = 0; ch < appconfAUDIO_PIPELINE_REF_CHANNELS; ch++) {
+                ref.samples[i][ch] = mono;
+            }
+        }
+    }
+#else
     if (appconfI2S_AUDIO_SAMPLE_RATE == 3*appconfAUDIO_PIPELINE_SAMPLE_RATE) {
         static voice_src_ds3_t src_state[2];
 
@@ -116,6 +144,7 @@ void speaker_pipeline_output(void *output_app_data,
     } else {
       memcpy( ref.samples, tmp, sizeof(ref.samples) );
     }
+#endif
     stage_stats_end(STAGE_STATS_T1_SPK_SRC, src_start);
 
     /*

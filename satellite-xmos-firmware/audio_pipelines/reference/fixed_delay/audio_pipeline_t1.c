@@ -42,20 +42,52 @@
 #error The high-pass filter expects appconfAUDIO_PIPELINE_CHANNELS channels
 #endif
 
+#if AP_AEC_ON_RAW_MICS
+#if appconfAUDIO_PIPELINE_SKIP_AEC
+#error The aec4 build needs the AEC
+#endif
+#if appconfINPUT_SAMPLES_MIC_DELAY_MS != 0 && !appconfAUDIO_PIPELINE_SKIP_STATIC_DELAY
+#error The static delay only handles the two pipeline channels, not the raw mics of the aec4 build
+#endif
+#if MIC_FRONTEND_MIC_COUNT != 2 * MIC_HPF_CHANNELS
+#error The aec4 build filters the raw mics with two high-pass filters
+#endif
+#elif appconfAUDIO_PIPELINE_AEC_MICS != appconfAUDIO_PIPELINE_CHANNELS
+#error The AEC runs either on the pipeline channels or on all raw mics
+#endif
+
 #if ON_TILE(1)
 #if appconfINPUT_SAMPLES_MIC_DELAY_MS != 0
 static stage_delay_ctx_t DWORD_ALIGNED delay_buf_state = {};
 #endif
-static aec_ctx_t DWORD_ALIGNED aec_state = {};
+/* No initializer: static storage is zeroed anyway, and with one xcc places the aec4 state in .data (200 KB more flash image) */
+static aec_ctx_t DWORD_ALIGNED aec_state;
 
 static frame_pool_t frame_pool;
 
+#if AP_AEC_ON_RAW_MICS
+/*
+ * Tile 1 frame of the aec4 build. The raw mics travel with the frame from the
+ * capture stage to the AEC stage, which cancels the echo on them in place
+ * before the mic front end reduces them to the two pipeline channels.
+ */
+typedef struct {
+    frame_data_t fd;    /* first: the output function sends it to tile 0 as is */
+    int32_t DWORD_ALIGNED mics[appconfAUDIO_PIPELINE_MIC_COUNT][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
+    doa_result_t doa;   /* this frame's DOA result, for the mic front end */
+} t1_frame_t;
+#define T1_FRAME(frame_data) ((t1_frame_t *)(frame_data))
+
+/* The high-pass filter covers two channels: one for mics 0-1, one for 2-3 */
+static mic_hpf_t mic_hpf_hi;
+#else
 /*
  * Raw mics of the frame currently in stage 0. Only the stage 0 task touches it:
  * the input function fills it and stage_frontend() consumes it before the next
  * input call.
  */
 static int32_t DWORD_ALIGNED mic_raw[appconfAUDIO_PIPELINE_MIC_COUNT][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
+#endif
 static mic_frontend_state_t mic_frontend_state;
 static doa_state_t doa_state;
 static mic_hpf_t mic_hpf;
@@ -72,9 +104,14 @@ static void *audio_pipeline_input_i(void *input_app_data)
     frame_data->aec_corr_factor = (float_s32_t){0, 0};
     frame_data->t0_ctrl = audio_ctrl_get_t0_word();
 
+#if AP_AEC_ON_RAW_MICS
+    int32_t *mics = &T1_FRAME(frame_data)->mics[0][0];
+#else
+    int32_t *mics = &mic_raw[0][0];
+#endif
     audio_pipeline_input(input_app_data,
                          &frame_data->aec_reference_audio_samples[0][0],
-                         &mic_raw[0][0],
+                         mics,
                          appconfAUDIO_PIPELINE_FRAME_ADVANCE);
 
     return frame_data;
@@ -107,6 +144,7 @@ static int playback_active(frame_data_t *frame_data)
     return energy > AP_PLAYBACK_ENERGY_THRESHOLD;
 }
 
+#if !AP_AEC_ON_RAW_MICS
 /* Reduces the raw mics to the pipeline channels and updates the DOA estimate. */
 static void stage_frontend(frame_data_t *frame_data)
 {
@@ -152,7 +190,66 @@ static void stage_frontend(frame_data_t *frame_data)
                        mic_frontend_get_beam_azimuth(&mic_frontend_state, mode),
                        mic_frontend_conversation_lapsed(&mic_frontend_state));
 }
+#else /* AP_AEC_ON_RAW_MICS */
+/*
+ * Capture stage of the aec4 build: the DOA estimate on the raw mics (gated
+ * during playback, as before) and the high-pass filter on all four mics.
+ */
+static void stage_capture(frame_data_t *frame_data)
+{
+    t1_frame_t *t1 = T1_FRAME(frame_data);
 
+    t1->doa = *doa_process(&doa_state, &t1->mics[0][0], playback_active(frame_data));
+
+    /* Before the AEC: it is linear, so the filter just becomes part of the echo path */
+    if (audio_ctrl_get_hpf()) {
+        if (!mic_hpf_active) {
+            mic_hpf_reset(&mic_hpf);
+            mic_hpf_reset(&mic_hpf_hi);
+            mic_hpf_active = 1;
+        }
+        mic_hpf_process(&mic_hpf, &t1->mics[0][0], appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+        mic_hpf_process(&mic_hpf_hi, &t1->mics[MIC_HPF_CHANNELS][0], appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+    } else {
+        mic_hpf_active = 0;
+    }
+}
+
+/*
+ * Mic front end of the aec4 build, on the echo cancelled mics: steering,
+ * wake word and the reduction to the two pipeline channels.
+ */
+static void stage_frontend_after_aec(frame_data_t *frame_data)
+{
+    t1_frame_t *t1 = T1_FRAME(frame_data);
+    const mic_mode_t mode = audio_ctrl_get_mic_mode();
+
+    mic_frontend_set_steering(&mic_frontend_state,
+                              audio_ctrl_get_steer_policy(),
+                              audio_ctrl_get_conversation());
+    mic_frontend_update(&mic_frontend_state, mode, &t1->doa);
+    const uint32_t wake_count = audio_ctrl_get_wake_count();
+    if (wake_count != wake_count_seen) {
+        /* Before the wake sound plays: the DOA results of the wake word are in the history */
+        wake_count_seen = wake_count;
+        (void) mic_frontend_wake_word(&mic_frontend_state, mode);
+    }
+    mic_frontend_process(&mic_frontend_state,
+                         mode,
+                         &t1->mics[0][0],
+                         &frame_data->samples[0][0],
+                         appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+
+    uint8_t ch0_mask;
+    uint8_t ch1_mask;
+    mic_frontend_get_masks(&mic_frontend_state, mode, &ch0_mask, &ch1_mask);
+    audio_ctrl_publish(&t1->doa, ch0_mask, ch1_mask,
+                       mic_frontend_get_beam_azimuth(&mic_frontend_state, mode),
+                       mic_frontend_conversation_lapsed(&mic_frontend_state));
+}
+#endif /* AP_AEC_ON_RAW_MICS */
+
+#if !AP_AEC_ON_RAW_MICS
 static void stage_delay(frame_data_t *frame_data)
 {
 #if appconfAUDIO_PIPELINE_SKIP_STATIC_DELAY
@@ -197,12 +294,17 @@ static void stage_delay(frame_data_t *frame_data)
 #endif
 #endif /* appconfAUDIO_PIPELINE_SKIP_DELAY */
 }
+#endif /* !AP_AEC_ON_RAW_MICS */
 
 static void stage_frontend_and_delay(frame_data_t *frame_data)
 {
     const uint32_t start = stage_stats_start();
+#if AP_AEC_ON_RAW_MICS
+    stage_capture(frame_data);
+#else
     stage_frontend(frame_data);
     stage_delay(frame_data);
+#endif
     stage_stats_end(STAGE_STATS_T1_FRONTEND, start);
 }
 
@@ -212,14 +314,20 @@ static void stage_aec(frame_data_t *frame_data)
 #if !appconfAUDIO_PIPELINE_SKIP_AEC
     /*
      * In place: aec_frame_init() copies the mics into the AEC state before any
-     * output is written. max_ref_energy was set by stage_frontend().
+     * output is written. max_ref_energy was set by stage 0 (playback_active()).
      */
+#if AP_AEC_ON_RAW_MICS
+    /* aec4: on the four raw mics against the mono reference in channel 0 */
+    int32_t (*aec_io)[AEC_FRAME_ADVANCE] = T1_FRAME(frame_data)->mics;
+#else
+    int32_t (*aec_io)[AEC_FRAME_ADVANCE] = frame_data->samples;
+#endif
     aec_process_frame_1thread(
             &aec_state.aec_main_state,
             &aec_state.aec_shadow_state,
-            frame_data->samples,
+            aec_io,
             NULL,
-            (const int32_t (*)[AEC_FRAME_ADVANCE])frame_data->samples,
+            (const int32_t (*)[AEC_FRAME_ADVANCE])aec_io,
             frame_data->aec_reference_audio_samples);
 
 #if (appconfINPUT_SAMPLES_MIC_DELAY_MS < 0) && !appconfAUDIO_PIPELINE_SKIP_STATIC_DELAY
@@ -229,6 +337,10 @@ static void stage_aec(frame_data_t *frame_data)
                                     aec_state.aec_main_state.shared_state->num_x_channels);
 #endif
     frame_data->aec_corr_factor = aec_calc_corr_factor(&aec_state.aec_main_state, 0);
+#endif
+
+#if AP_AEC_ON_RAW_MICS
+    stage_frontend_after_aec(frame_data);
 #endif
 
     /*
@@ -243,7 +355,12 @@ static void stage_aec(frame_data_t *frame_data)
 
 static void initialize_pipeline_stages(void)
 {
+#if AP_AEC_ON_RAW_MICS
+    frame_pool_init(&frame_pool, sizeof(t1_frame_t), AP_T1_FRAME_COUNT);
+    mic_hpf_init(&mic_hpf_hi);
+#else
     frame_pool_init(&frame_pool, sizeof(frame_data_t), AP_T1_FRAME_COUNT);
+#endif
     mic_frontend_init(&mic_frontend_state);
     audio_ctrl_set_ch1_taps(AP_CH1_TAPS);
     doa_init(&doa_state);
