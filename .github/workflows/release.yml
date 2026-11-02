@@ -85,11 +85,16 @@ jobs:
         run: |
           bash tools/ci/log_metadata.sh ./dist/build_metadata.json
 
+      # The Debian package carries the default firmware only; dist/ also holds
+      # the experimental aec4 images, so stage the fixed_delay ones on their own.
       - name: Package Satellite1 XMOS firmware for Debian
         env:
           PACKAGE_REVISION: ${{ inputs.package_revision || '1' }}
         run: |
-          bash tools/ci/package_firmware_deb.sh
+          deb_input=$(mktemp -d)
+          cp ./dist/satellite1_firmware_fixed_delay.factory.bin \
+             ./dist/satellite1_firmware_fixed_delay.upgrade.bin "$deb_input"/
+          bash tools/ci/package_firmware_deb.sh --dist-dir "$deb_input" --output-dir ./dist
 
       - name: Save firmware artifacts
         uses: actions/upload-artifact@v7
@@ -136,6 +141,9 @@ jobs:
           zip -r --symlinks ${RELEASE_ASSETS_DIR}/${FIRMWARE_ARTIFACT_NAME}.zip .
           cp satellite1_firmware_fixed_delay.factory.bin ${RELEASE_ASSETS_DIR}/satellite1_xmos.factory.bin
           cp satellite1_firmware_fixed_delay.factory.md5 ${RELEASE_ASSETS_DIR}/satellite1_xmos.factory.md5
+          # Experimental: AEC on all four mics with a mono reference
+          cp satellite1_firmware_aec4.factory.bin ${RELEASE_ASSETS_DIR}/satellite1_xmos_aec4.factory.bin
+          cp satellite1_firmware_aec4.factory.md5 ${RELEASE_ASSETS_DIR}/satellite1_xmos_aec4.factory.md5
           ls -l ${RELEASE_ASSETS_DIR}
 
       - name: Upload assets to release
