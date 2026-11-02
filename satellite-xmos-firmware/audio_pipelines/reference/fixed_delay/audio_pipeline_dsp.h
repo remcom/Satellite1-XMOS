@@ -16,9 +16,11 @@
 #define AP_MAX_X_CHANNELS (2)
 #define AP_FRAME_ADVANCE (240)
 
-/* AEC config */
-#define AEC_MAX_Y_CHANNELS   (AP_MAX_Y_CHANNELS)
-#define AEC_MAX_X_CHANNELS   (AP_MAX_X_CHANNELS)
+/* AEC config: appconfAUDIO_PIPELINE_AEC_MICS x appconfAUDIO_PIPELINE_AEC_REF_CHANNELS */
+#define AEC_MAX_Y_CHANNELS   (appconfAUDIO_PIPELINE_AEC_MICS)
+#define AEC_MAX_X_CHANNELS   (appconfAUDIO_PIPELINE_AEC_REF_CHANNELS)
+/* The AEC runs on the raw mics and the mic front end after it (aec4 build) */
+#define AP_AEC_ON_RAW_MICS   (appconfAUDIO_PIPELINE_AEC_MICS == appconfAUDIO_PIPELINE_MIC_COUNT)
 #define AEC_MAIN_FILTER_PHASES    (10)
 #define AEC_SHADOW_FILTER_PHASES    (5)
 

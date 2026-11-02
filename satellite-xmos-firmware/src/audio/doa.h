@@ -25,7 +25,13 @@
  */
 #define DOA_MAX_LAG_SAMPLES     4
 #define DOA_BAND_LO_HZ          300
-#define DOA_BAND_HI_HZ          3500
+/*
+ * Opposite mics are 7.1 cm apart, so bins above ~2.4 kHz alias. Up to 3 kHz they
+ * still sharpen the peak more than they blur it; above that reverb gets the upper
+ * hand. Simulated rooms (RT60 0.1-0.6 s): 3000 vs 3500 Hz cut the 90th percentile
+ * error in a live room from ~12 to ~9 degrees, 2400 Hz doubled it.
+ */
+#define DOA_BAND_HI_HZ          3000
 #define DOA_SPEECH_SNR          4.0f    /* frame energy over noise floor (~6 dB) to count as speech */
 #define DOA_MIN_ENERGY          1e-9f   /* ~-90 dBFS; quieter frames are ignored */
 #define DOA_NOISE_FLOOR_RISE    1.002f  /* per-frame noise floor rise (~0.6 dB/s) */

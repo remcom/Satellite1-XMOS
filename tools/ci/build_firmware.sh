@@ -29,7 +29,7 @@ done
 INPUT_LIST=${@:$OPTIND:1}
 if [ ! -f "$INPUT_LIST" ]; then
     echo "ERROR: $INPUT_LIST does not exist"
-    exit
+    exit 1
 fi
 
 XCORE_VOICE_ROOT=`git rev-parse --show-toplevel`

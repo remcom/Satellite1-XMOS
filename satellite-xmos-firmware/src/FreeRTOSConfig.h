@@ -54,7 +54,12 @@ your application. */
 #define configTOTAL_HEAP_SIZE                   180*1024
 #endif
 #if ON_TILE(1)
+#if defined(appconfAUDIO_PIPELINE_AEC_MICS) && (appconfAUDIO_PIPELINE_AEC_MICS == 4)
+/* aec4: each of the four tile 1 pipeline frames also carries the four raw mics (3.8 KB) */
+#define configTOTAL_HEAP_SIZE                   152*1024
+#else
 #define configTOTAL_HEAP_SIZE                   136*1024
+#endif
 #endif
 #define configAPPLICATION_ALLOCATED_HEAP        0
 
