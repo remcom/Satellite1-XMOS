@@ -190,11 +190,24 @@ control_ret_t dfu_servicer_write_cmd(control_resource_info_t *res_info, control_
         break;
 
     case DFU_CONTROLLER_SERVICER_RESID_DFU_DNLOAD:
+    {
         debug_printf("DFU_CONTROLLER_SERVICER_RESID_DFU_DNLOAD\n");
         uint16_t dnload_length = payload[0] + (payload[1] << 8);
         const uint8_t * dnload_data = &payload[2];
+        /*
+         * The embedded length comes from the host. It may not exceed one DFU
+         * fragment or the data actually received; dfu_int_download() asserts
+         * on the first and would copy past the payload on the second.
+         */
+        if (payload_len < 2 ||
+            dnload_length > DFU_DATA_XFER_SIZE ||
+            dnload_length > payload_len - 2) {
+            ret = SERVICER_WRONG_PAYLOAD;
+            break;
+        }
         dfu_int_download(dnload_length, dnload_data);
         break;
+    }
 
     case DFU_CONTROLLER_SERVICER_RESID_DFU_CLRSTATUS:
         debug_printf("DFU_CONTROLLER_SERVICER_RESID_DFU_CLRSTATUS\n");

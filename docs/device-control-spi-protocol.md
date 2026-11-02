@@ -65,7 +65,11 @@ Each non-NOP request starts with a three-byte header.
 Transfer limits:
 
 - Device SPI RX/TX transfer buffers are 256 bytes.
-- Maximum framed payload is 253 bytes (`256 - 3`).
+- Maximum framed payload is 253 bytes (`256 - 3`). A larger `payload_len` is
+  rejected with `CONTROL_DATA_LENGTH_ERROR`.
+- Read requests must have `payload_len >= 1`, because byte `0` of every read
+  payload is the command status. A zero-length read is rejected with
+  `CONTROL_DATA_LENGTH_ERROR`.
 - The host helper `control_build_spi_data()` returns `3 + payload_len` bytes
   for writes.
 - The host helper `control_build_spi_data()` returns 8 bytes for reads: the
@@ -139,8 +143,16 @@ frame:
 | Byte offset | Field |
 | --- | --- |
 | `0` | Literal response length marker `1` |
-| `1` | `control_ret_t` status returned by `device_control_request()` |
+| `1` | `control_ret_t` result of the command (see below) |
 | `2..` | Device status buffer, then zero padding |
+
+For a write, byte `1` is the result of executing the command: the servicer's
+return value (e.g. `SERVICER_WRONG_PAYLOAD` for an out-of-range value), or
+`CONTROL_DATA_LENGTH_ERROR` when the transfer carried fewer bytes than
+`payload_len`. For a request that was not dispatched, it is the reason it was
+rejected: `CONTROL_BAD_COMMAND` for an unknown resource, `CONTROL_DATA_LENGTH_ERROR`
+for an over-limit length or a zero-length read, or `CONTROL_MALFORMED_PACKET` for
+a transfer shorter than three bytes.
 
 The device status buffer has `MAX_STATUS_BUFFER_LEN = 10` bytes. The GPIO
 handler can update status-buffer slots with `device_control_set_resource_status()`.
@@ -480,6 +492,16 @@ Image status flags:
 ### `0x11`
 
 - Added explicit SPI read-payload availability framing.
+- Status-only frames after a write now carry the command's actual result.
+  Previously byte `1` was always `CONTROL_SUCCESS` once the resource existed,
+  even when the servicer rejected the value or the payload was truncated.
+- Zero-length reads and payload lengths above 253 bytes are rejected with
+  `CONTROL_DATA_LENGTH_ERROR` instead of reaching the servicers (a zero-length
+  read of an off-tile resource used to halt the firmware on an assertion).
+- A failed read never reports `CONTROL_SUCCESS` in its status byte, and the
+  rest of a failed read payload is zero rather than stale buffer contents.
+- `DFU_CONTROLLER_SERVICER_RESID_DFU_DNLOAD` rejects an embedded length above
+  128 bytes with `SERVICER_WRONG_PAYLOAD` instead of halting on an assertion.
 - Complete zero headers (`[00, 00, 00]`) are transport NOPs regardless of
   pending-read state. They do not dispatch special resource `0` or change the
   last-command status, and they stage a fresh successful status response after

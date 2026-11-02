@@ -186,8 +186,12 @@ control_ret_t device_control_payload_transfer(device_control_t *ctx,
  *                    This will be updated
  *                    to the number of bytes actually written to \p tx_buf.
  *
+ * \returns The result of executing the command: the servicer's return value,
+ *          or the length/resource error that prevented dispatch. This differs
+ *          from the device_control_request() result, which only reports
+ *          whether the resource exists.
  */
-void device_control_payload_transfer_bidir(device_control_t *ctx,
+control_ret_t device_control_payload_transfer_bidir(device_control_t *ctx,
                                               uint8_t *rx_buf,
                                               const size_t rx_size,
                                               uint8_t *tx_buf,

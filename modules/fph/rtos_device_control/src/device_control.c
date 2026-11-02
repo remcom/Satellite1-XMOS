@@ -118,6 +118,11 @@ static void device_control_client_thread(device_control_t *ctx)
                 xassert(c_ptr->payload_len > 0);
                 /* Allocate a buffer for the read data to be written to */
                 c_ptr->payload = rtos_osal_malloc(c_ptr->payload_len);
+                /*
+                 * The whole buffer is sent back even when the handler fails
+                 * without writing it, so never return uninitialized heap.
+                 */
+                memset(c_ptr->payload, 0, c_ptr->payload_len);
             } else {
                 xassert(msg_length >= sizeof(cmd_to_servicer_t));
                 xassert(c_ptr->payload_len == msg_length - sizeof(cmd_to_servicer_t));
@@ -177,6 +182,15 @@ static control_ret_t do_command(device_control_t *ctx,
                                 unsigned payload_len)
 {
     control_ret_t ret;
+
+    /*
+     * Every read payload starts with a status byte, so a read needs room for
+     * at least one byte. Rejecting it here also keeps zero-length reads away
+     * from the off-tile client thread, which asserts on them.
+     */
+    if (IS_CONTROL_CMD_READ(cmd) && payload_len == 0) {
+        return CONTROL_DATA_LENGTH_ERROR;
+    }
 
     if (resid == CONTROL_SPECIAL_RESID) {
         if (IS_CONTROL_CMD_READ(cmd)) {
@@ -246,7 +260,7 @@ static control_ret_t do_command(device_control_t *ctx,
     }
 }
 
-void device_control_payload_transfer_bidir(device_control_t *ctx,
+control_ret_t device_control_payload_transfer_bidir(device_control_t *ctx,
                                               uint8_t *rx_buf,
                                               const size_t rx_size,
                                               uint8_t *tx_buf,
@@ -276,8 +290,16 @@ void device_control_payload_transfer_bidir(device_control_t *ctx,
         else // Read command
         {
             rtos_printf("do_read_command(), requested_resid %d, requested_cmd %d, requested_payload_len %d\n", requested_resid, requested_cmd, requested_payload_len);
+            memset(tx_buf, 0, requested_payload_len);
             ret = do_command(ctx, servicer, requested_resid, requested_cmd, tx_buf, requested_payload_len);
-            //tx_buf[0] = ret;
+            /*
+             * Byte 0 of a read payload is the command status. Some error paths
+             * return without writing it, so make sure a failed read never
+             * reports success to the host.
+             */
+            if (ret != CONTROL_SUCCESS && requested_payload_len > 0 && tx_buf[0] == CONTROL_SUCCESS) {
+                tx_buf[0] = ret;
+            }
             *tx_size = requested_payload_len;
         }
     }
@@ -289,6 +311,8 @@ void device_control_payload_transfer_bidir(device_control_t *ctx,
     }
 
     ctx->last_status = ret;
+
+    return ret;
 }
 
 control_ret_t device_control_payload_transfer(device_control_t *ctx,
