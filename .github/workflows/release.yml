@@ -135,16 +135,36 @@ jobs:
           name: ${{ env.DEBIAN_PACKAGE_ARTIFACT_NAME }}
           path: ${{ env.RELEASE_ASSETS_DIR }}
 
+      # Each firmware image is attached twice: under its plain name (used by
+      # existing ESPHome configs) and with "-<release tag>" appended, e.g.
+      # satellite1_xmos-v1.2.0.factory.bin, so images of different releases
+      # can sit side by side and be told apart by name. The zip is attached
+      # with the versioned name only: the Documentation repo unzips "*.zip",
+      # which breaks when a release has more than one zip.
       - name: Prepare release assets
+        env:
+          FIRMWARE_VERSION: ${{ needs.build_firmware.outputs.firmware_version }}
         run: |
-          cd ${RELEASE_SOURCES_DIR}
-          zip -r --symlinks ${RELEASE_ASSETS_DIR}/${FIRMWARE_ARTIFACT_NAME}.zip .
-          cp satellite1_firmware_fixed_delay.factory.bin ${RELEASE_ASSETS_DIR}/satellite1_xmos.factory.bin
-          cp satellite1_firmware_fixed_delay.factory.md5 ${RELEASE_ASSETS_DIR}/satellite1_xmos.factory.md5
+          set -euo pipefail
+          if [ "$FIRMWARE_VERSION" != "$RELEASE_TAG" ]; then
+            echo "::error::Built firmware version '$FIRMWARE_VERSION' does not match release tag '$RELEASE_TAG'"
+            exit 1
+          fi
+
+          # add_asset <source file> <asset base name> <extension>
+          add_asset() {
+            cp "$1" "${RELEASE_ASSETS_DIR}/$2.$3"
+            cp "$1" "${RELEASE_ASSETS_DIR}/$2-${FIRMWARE_VERSION}.$3"
+          }
+
+          cd "${RELEASE_SOURCES_DIR}"
+          zip -r --symlinks "${RELEASE_ASSETS_DIR}/${FIRMWARE_ARTIFACT_NAME}-${FIRMWARE_VERSION}.zip" .
+          add_asset satellite1_firmware_fixed_delay.factory.bin satellite1_xmos factory.bin
+          add_asset satellite1_firmware_fixed_delay.factory.md5 satellite1_xmos factory.md5
           # Experimental: AEC on all four mics with a mono reference
-          cp satellite1_firmware_aec4.factory.bin ${RELEASE_ASSETS_DIR}/satellite1_xmos_aec4.factory.bin
-          cp satellite1_firmware_aec4.factory.md5 ${RELEASE_ASSETS_DIR}/satellite1_xmos_aec4.factory.md5
-          ls -l ${RELEASE_ASSETS_DIR}
+          add_asset satellite1_firmware_aec4.factory.bin satellite1_xmos_aec4 factory.bin
+          add_asset satellite1_firmware_aec4.factory.md5 satellite1_xmos_aec4 factory.md5
+          ls -l "${RELEASE_ASSETS_DIR}"
 
       - name: Upload assets to release
         env:
