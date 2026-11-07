@@ -463,6 +463,7 @@ Commands:
 | `DFU_CONTROLLER_SERVICER_RESID_DFU_REBOOT` | `89` | Write | 1 byte | N/A |
 | `DFU_CONTROLLER_SERVICER_RESID_DFU_GETFLASHSERIAL` | `90` | Read | 8 bytes | 9 bytes |
 | `DFU_CONTROLLER_SERVICER_RESID_DFU_GETIMAGESTATUS` | `91` | Read | 1 byte | 2 bytes |
+| `DFU_CONTROLLER_SERVICER_RESID_DFU_GETVARIANT` | `92` | Read | 1 byte | 2 bytes |
 
 Read command encoded values set bit 7. For example,
 `DFU_CONTROLLER_SERVICER_RESID_DFU_GETSTATUS` (`3`) is sent as `0x83` for a
@@ -487,7 +488,30 @@ Image status flags:
 | `0` | `0x01` | Upgrade image present |
 | `1` | `0x02` | Data partition available after the DFU image area |
 
+The version command returns `[major, minor, patch, pre_release, counter]`,
+where `pre_release` is `0` none, `1` alpha, `2` beta, `3` rc, `4` dev. Its
+successful wire response is `[23, CONTROL_SUCCESS, major, minor, patch,
+pre_release, counter]`.
+
+The variant command returns one byte that identifies the firmware build
+variant. Its successful wire response is `[23, CONTROL_SUCCESS, variant]`.
+
+| Value | Variant | Release asset |
+| --- | --- | --- |
+| `0` | `fixed_delay` | `satellite1_xmos-<version>.factory.bin` |
+| `1` | `bypass` | not released |
+| `2` | `aec4` | `satellite1_xmos_aec4-<version>.factory.bin` |
+
+Values are never renumbered; new variants get the next free value. Firmware
+built before this command existed answers `CONTROL_BAD_COMMAND`; hosts should
+treat that as `fixed_delay`, the only variant those releases shipped.
+
 ## Changelog
+
+### Unreleased (protocol stays `0x11`)
+
+- Added `DFU_CONTROLLER_SERVICER_RESID_DFU_GETVARIANT` (`92`) to report the
+  firmware variant. Additive only: existing commands and payloads are unchanged.
 
 ### `0x11`
 

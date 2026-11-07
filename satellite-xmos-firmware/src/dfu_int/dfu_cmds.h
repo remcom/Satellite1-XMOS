@@ -51,7 +51,10 @@ enum e_dfu_controller_servicer_resid_cmds
 #ifndef DFU_CONTROLLER_SERVICER_RESID_DFU_GETIMAGESTATUS
     DFU_CONTROLLER_SERVICER_RESID_DFU_GETIMAGESTATUS = 91,
 #endif
-    NUM_DFU_CONTROLLER_SERVICER_RESID_CMDS = 13
+#ifndef DFU_CONTROLLER_SERVICER_RESID_DFU_GETVARIANT
+    DFU_CONTROLLER_SERVICER_RESID_DFU_GETVARIANT = 92,
+#endif
+    NUM_DFU_CONTROLLER_SERVICER_RESID_CMDS = 14
 };
 
 // DFU_CONTROLLER_SERVICER_RESID number of elements
@@ -81,6 +84,8 @@ enum e_dfu_controller_servicer_resid_cmds
 #define DFU_CONTROLLER_SERVICER_RESID_DFU_GETFLASHSERIAL_NUM_VALUES (8)
 // number of values of type dfu_controller_servicer_resid_dfu_getimagestatus_t expected by DFU_CONTROLLER_SERVICER_RESID_DFU_GETIMAGESTATUS
 #define DFU_CONTROLLER_SERVICER_RESID_DFU_GETIMAGESTATUS_NUM_VALUES (1)
+// number of values of type dfu_controller_servicer_resid_dfu_getvariant_t expected by DFU_CONTROLLER_SERVICER_RESID_DFU_GETVARIANT
+#define DFU_CONTROLLER_SERVICER_RESID_DFU_GETVARIANT_NUM_VALUES (1)
 
 // DFU_CONTROLLER_SERVICER_RESID types
 // type expected by DFU_CONTROLLER_SERVICER_RESID_DFU_DETACH
@@ -109,3 +114,12 @@ typedef uint8_t dfu_controller_servicer_resid_dfu_reboot_t;
 typedef uint8_t dfu_controller_servicer_resid_dfu_getflashserial_t;
 // type expected by DFU_CONTROLLER_SERVICER_RESID_DFU_GETIMAGESTATUS
 typedef uint8_t dfu_controller_servicer_resid_dfu_getimagestatus_t;
+// type expected by DFU_CONTROLLER_SERVICER_RESID_DFU_GETVARIANT
+typedef uint8_t dfu_controller_servicer_resid_dfu_getvariant_t;
+
+// Firmware variant IDs returned by DFU_CONTROLLER_SERVICER_RESID_DFU_GETVARIANT.
+// The build selects one with appconfFIRMWARE_VARIANT (see satellite1.cmake).
+// IDs are part of the host protocol: never renumber, only append.
+#define FIRMWARE_VARIANT_FIXED_DELAY (0)
+#define FIRMWARE_VARIANT_BYPASS      (1)
+#define FIRMWARE_VARIANT_AEC4        (2)

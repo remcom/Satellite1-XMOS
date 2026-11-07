@@ -18,6 +18,18 @@ foreach(FFVA_AP ${FFVA_PIPELINES_INT})
       set(PL_NAME ${FFVA_AP})
       list(APPEND FFVA_INT_COMPILE_DEFINITIONS appconfPIPELINE_BYPASS=0)
     endif()
+    # Variant ID reported over device control (DFU GETVARIANT, resid 92).
+    # Values match FIRMWARE_VARIANT_* in src/dfu_int/dfu_cmds.h.
+    if(${FFVA_AP} STREQUAL fixed_delay)
+      list(APPEND FFVA_INT_COMPILE_DEFINITIONS appconfFIRMWARE_VARIANT=0)
+    elseif(${FFVA_AP} STREQUAL bypass)
+      list(APPEND FFVA_INT_COMPILE_DEFINITIONS appconfFIRMWARE_VARIANT=1)
+    elseif(${FFVA_AP} STREQUAL aec4)
+      list(APPEND FFVA_INT_COMPILE_DEFINITIONS appconfFIRMWARE_VARIANT=2)
+    else()
+      message(FATAL_ERROR "No firmware variant ID for pipeline '${FFVA_AP}'; add one to satellite1.cmake and dfu_cmds.h")
+    endif()
+
     if(${FFVA_AP} STREQUAL aec4)
       list(APPEND FFVA_INT_COMPILE_DEFINITIONS
           appconfAUDIO_PIPELINE_AEC_MICS=4
