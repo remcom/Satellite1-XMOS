@@ -28,3 +28,20 @@ def test_invalid_version_string(invalid_version):
     with pytest.raises(SystemExit):
         XMOSVersion.from_string(invalid_version)
 
+
+
+# set_to_dev must return the version in both branches: callers chain on it
+# (get_version, track_dev_build), so a dev tag used to yield None.
+@pytest.mark.parametrize(
+    "version_str, expected",
+    [
+        ("v1.2.3", (1, 2, 3, PRE_RELEASES.index("dev"), 0)),
+        ("v1.2.3-beta.4", (1, 2, 3, PRE_RELEASES.index("dev"), 0)),
+        ("v1.2.3-dev", (1, 2, 3, PRE_RELEASES.index("dev"), 0)),
+        ("v1.2.3-dev.7", (1, 2, 3, PRE_RELEASES.index("dev"), 7)),
+    ]
+)
+def test_set_to_dev_returns_version(version_str, expected):
+    version = XMOSVersion.from_string(version_str).set_to_dev()
+    assert version is not None
+    assert (version.major, version.minor, version.patch, version.pre_release, version.pre_counter) == expected

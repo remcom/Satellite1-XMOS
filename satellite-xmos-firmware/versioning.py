@@ -67,7 +67,7 @@ class XMOSVersion:
     
     def set_to_dev(self):
         if PRE_RELEASES[self.pre_release] == "dev":
-            return
+            return self
         self.pre_release = PRE_RELEASES.index("dev")
         self.pre_counter = 0
         return self

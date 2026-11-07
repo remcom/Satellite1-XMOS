@@ -78,3 +78,7 @@ build/
 #tools/ai/ai_tools
 #*xcore_sdk_venv/*
 #examples/mic_aggregator/src/par_decimator
+
+# CI python environment (tools/ci/helper_functions.sh)
+/build_venv/
+/build_python/

@@ -62,25 +62,73 @@ function export_ci_build_vars {
     fi
 }
 
-# Function to set up Python environment and install dependencies
+# Python version for the build venv. xmos-ai-tools needs numpy<2.0, and numpy
+# 1.26 has wheels up to Python 3.12 only, so 3.12 is the newest usable version.
+CI_PYTHON_VERSION="${CI_PYTHON_VERSION:-3.12}"
+
+# Print the major.minor version of a python interpreter, or nothing on failure.
+function python_minor_version() {
+    "$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null
+}
+
+# Create a venv on CI_PYTHON_VERSION at $1. Uses python<version> when the system
+# has it; otherwise uv (bootstrapped with the system python3) downloads a
+# standalone build into build_python/, which works on old glibc such as the
+# Debian 11 based xcore_builder image.
+function create_python_venv() {
+    local venv_dir=$1
+    local root=$2
+    local system_python="python${CI_PYTHON_VERSION}"
+
+    if command -v "${system_python}" >/dev/null 2>&1; then
+        echo "Creating Python ${CI_PYTHON_VERSION} virtual environment in ${venv_dir}..."
+        "${system_python}" -m venv "${venv_dir}"
+        return
+    fi
+
+    local tools_dir="${root}/build_python"
+    export UV_PYTHON_INSTALL_DIR="${tools_dir}/pythons"
+    export UV_CACHE_DIR="${tools_dir}/cache"
+    if [ ! -x "${tools_dir}/uv/bin/uv" ]; then
+        echo "Python ${CI_PYTHON_VERSION} not installed; bootstrapping uv in ${tools_dir}..."
+        python3 -m venv "${tools_dir}/uv"
+        "${tools_dir}/uv/bin/pip" install --quiet --no-cache-dir uv
+    fi
+    echo "Creating Python ${CI_PYTHON_VERSION} virtual environment in ${venv_dir} (via uv)..."
+    "${tools_dir}/uv/bin/uv" venv --seed --python "${CI_PYTHON_VERSION}" "${venv_dir}"
+}
+
+# Function to set up Python environment and install dependencies.
+# The venv is recreated when it is on another Python version, and the
+# requirements are reinstalled whenever requirements.txt changes (tracked by
+# its hash in the venv), so an existing build_venv picks up version bumps.
 function setup_python_env() {
     local root=$1
     local venv_dir="${root}/build_venv"
     local req_file="${root}/requirements.txt"
-    
-    # Check if virtual environment exists, if not, create it
+    local stamp_file="${venv_dir}/.requirements.sha256"
+
+    if [ -d "${venv_dir}" ] && [ "$(python_minor_version "${venv_dir}/bin/python")" != "${CI_PYTHON_VERSION}" ]; then
+        echo "Existing ${venv_dir} is not on Python ${CI_PYTHON_VERSION}; recreating it..."
+        rm -rf "${venv_dir}"
+    fi
     if [ ! -d "${venv_dir}" ]; then
-        echo "Creating Python virtual environment in ${venv_dir}..."
-        python3 -m venv "${venv_dir}"
-        # Activate the virtual environment
-        echo "Activating virtual environment in ${venv_dir}..."
-        source "${venv_dir}/bin/activate"
+        create_python_venv "${venv_dir}" "${root}"
+    fi
+
+    echo "Activating virtual environment in ${venv_dir}..."
+    source "${venv_dir}/bin/activate"
+    echo "Using $(python --version)"
+
+    local req_hash
+    req_hash=$(python -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "${req_file}")
+    if [ ! -f "${stamp_file}" ] || [ "$(cat "${stamp_file}")" != "${req_hash}" ]; then
+        echo "Installing ${req_file}..."
         python -m pip install --upgrade pip
         pip install --no-cache-dir -r "${req_file}"
+        echo "${req_hash}" > "${stamp_file}"
         echo "Python environment setup complete."
-    else 
-        # Activate the virtual environment
-        echo "Activating virtual environment in ${venv_dir}..."
-        source "${venv_dir}/bin/activate"
+    else
+        echo "Python requirements unchanged; skipping install."
     fi
 }
