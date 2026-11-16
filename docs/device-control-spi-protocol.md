@@ -508,7 +508,7 @@ treat that as `fixed_delay`, the only variant those releases shipped.
 
 ## Changelog
 
-### Unreleased (protocol stays `0x11`)
+### v2.0.0 (protocol stays `0x11`)
 
 - Added `DFU_CONTROLLER_SERVICER_RESID_DFU_GETVARIANT` (`92`) to report the
   firmware variant. Additive only: existing commands and payloads are unchanged.
