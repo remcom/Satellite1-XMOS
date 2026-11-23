@@ -8,8 +8,9 @@
 /**
  * @brief Stats servicer task.
  *
- * Reports audio stage processing times, stack and heap use of both tiles
- * (audio/stage_stats.h). Runs on tile 0, which receives the tile 1 numbers
+ * Reports audio stage processing times, stack and heap use of both tiles,
+ * and audio quality (audio/stage_stats.h, audio/audio_quality.h).
+ * Runs on tile 0, which receives the tile 1 numbers
  * with the audio frames.
  *
  * \param args   Pointer to the servicer_register_ctx_t of this servicer

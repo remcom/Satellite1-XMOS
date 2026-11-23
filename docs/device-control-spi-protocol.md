@@ -405,6 +405,7 @@ hardware. All commands are read only; values are little-endian.
 | `STATS_SERVICER_CMD_STAGE_TIMES` | `0` | Read | 28 bytes | 29 bytes |
 | `STATS_SERVICER_CMD_STACK_FREE` | `1` | Read | 14 bytes | 15 bytes |
 | `STATS_SERVICER_CMD_HEAP_FREE` | `2` | Read | 16 bytes | 17 bytes |
+| `STATS_SERVICER_CMD_AUDIO_QUALITY` | `3` | Read | 32 bytes | 33 bytes |
 
 Stages, in the order every per-stage array uses:
 
@@ -430,6 +431,97 @@ Stages, in the order every per-stage array uses:
   boot, tile 1 free heap, tile 1 lowest free heap since boot, in bytes.
 
 Writes are rejected with `CONTROL_BAD_COMMAND`.
+
+#### Audio quality payload (version 1)
+
+Read resource `250`, command `0x83`, request length `33` (the existing status
+byte followed by exactly 32 data bytes). The following offsets exclude status.
+All multibyte fields are little-endian. This command is additive: commands
+`0`–`2`, their lengths, responses and reset-on-read behavior are unchanged.
+
+| Data offset | Type | Meaning |
+| --- | --- | --- |
+| `0` | `uint8` | Payload version, `1` |
+| `1` | `uint8` | Active AEC microphone channel count, `0`, `2` or `4` |
+| `2` | `uint8` | Monitored output channel count: `2` with I2S output, otherwise `0` |
+| `3` | `uint8` | Flags: bit 0 reference telemetry available; bit 1 at least one completed pipeline frame published; other bits zero |
+| `4` | `uint32` | Completed pipeline frame sequence, modulo 2³² |
+| `8` | `uint32` | Oldest reference frames actually removed from a full queue |
+| `12` | `uint32` | New reference frames discarded because the retry enqueue failed |
+| `16` | `int16[4]` | Smoothed ERLE per AEC microphone channel, in 0.01 dB; `-32768` means unavailable |
+| `24` | `uint32[2]` | Samples at or above 0.99 full scale in magnitude, output channels left then right |
+
+The payload always occupies 32 bytes, including unused ERLE slots. Hosts must
+check version, channel counts and flags before interpreting measurements.
+Before the first completed frame, bit 1 and the AEC count are zero, all ERLE
+slots are unavailable, and all counters are zero. If processing stalls, the
+last complete snapshot remains readable; an unchanged sequence can indicate
+staleness. The sequence wraps and does not identify a firmware boot.
+
+ERLE is `10 * log10(y_ema_energy[ch] / error_ema_energy[ch])`, using lib_aec's
+existing time-domain energy estimates for the main filter, before downstream
+mic gain, IC, NS and AGC. The pinned library uses an EMA retention factor of
+0.98 per 240-sample/15 ms frame (about 0.74 s time constant); there is no second
+telemetry smoother. Conversion to dB runs only in the stats reader, using the
+mantissas and exponent difference to avoid floating-point energy underflow or
+overflow. Values round to the nearest 0.01 dB (half away from zero) and clamp
+to ±96.00 dB. Both energies zero, or either energy negative, yields unavailable.
+Positive input with zero residual yields +96.00 dB; zero input with positive
+residual yields -96.00 dB. This ratio is a diagnostic estimate, affected by
+near-end speech and noise; it is not gated on far-end-only playback.
+
+`fixed_delay` reports its two AEC input channels in current mic-front-end
+order (pair/average/beam), while `aec4` reports all four raw AEC microphones
+in N, S, E, W order. `bypass`, or a build skipping the AEC, reports count zero
+and four unavailable ERLE values. Skipping IC, NS or AGC does not disable AEC
+telemetry or clipping counts. A build without I2S output reports output count
+zero and zero clip counts. Reference availability reflects the configured
+I2S reference path on the microphone tile; without it, bit 0 and drop counts
+are zero. Unavailable and genuine zero values are distinguished by these
+counts, flags and the ERLE sentinel.
+
+Clipping counts inspect the final signed Q1.31 I2S output after output sample
+rate conversion, including interpolation overshoot, independently on both
+channels. With full scale defined as 2³¹, the inclusive integer test is
+`sample >= 2126008812 || sample <= -2126008812`; `INT32_MIN` is counted safely.
+Counts are samples, not clipped frames or peak amplitudes. At the supported
+48 kHz output rate, a 15 ms frame contributes up to 720 per channel. Right
+channel counts follow the selected output tap (or reference in bypass).
+
+Reference counters increment at the existing nonblocking drop branch in
+`speaker_pipeline_output()`. A failed initial enqueue alone does not count:
+the consumer may have drained the queue before the attempted removal. The
+oldest counter increments only on successful removal, and the newest counter
+only on failed retry enqueue. Both may increment for one enqueue attempt.
+Totals accompany the next successfully queued reference frame and then its
+microphone frame through the AEC and tile-0 output. They therefore describe
+the reference history attached to that output frame, rather than a live
+cross-task read; reporting lags ongoing speaker drops while the pipeline is
+stalled. The queue's drop-oldest policy is unchanged.
+
+Both reference counters and both clip counters saturate at `UINT32_MAX`;
+reads never clear them. All telemetry resets on firmware boot; there is no
+runtime reset command. Hosts can take differences until saturation and must
+handle reboot and sequence wrap. The existing stage-time command still resets
+only its own maxima.
+
+The final tile-0 output task assembles one snapshot from its frame's AEC
+energies/reference totals and cumulative output clip counts. It tries a mutex
+with zero timeout to publish a bounded copy; if a stats reader holds it, the
+pipeline skips that publication and continues accumulating. The next successful
+publication includes all intervening counts. The stats reader copies the last
+complete snapshot under the same mutex and releases it before logarithms,
+encoding or SPI work. Thus responses cannot mix fields from different
+publications, and audio never waits for the telemetry reader. Reading telemetry
+does not introduce a new intertile transaction: the bounded internal report
+travels with the existing audio frame.
+
+Host coverage is in `tests/test_audio_quality`, including wire bytes, energy
+edge cases, clipping boundaries, saturating drop accounting, nonwaiting
+publication under contention, and concurrent snapshot consistency. Target
+builds, RAM/stack reports, frame-time overhead and physical audio quality must
+be checked separately on an equipped XMOS environment; host results do not
+measure those costs. No performance improvement is claimed.
 
 ### DFU Servicer
 

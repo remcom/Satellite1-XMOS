@@ -31,6 +31,7 @@
 #include "stats_servicer/stats_servicer.h"
 #include "audio/audio_ctrl.h"
 #include "audio/stage_stats.h"
+#include "audio/audio_quality.h"
 #include "audio/voice_src.h"
 
 
@@ -43,7 +44,16 @@
 /* One block of speaker reference at the pipeline rate, sample interleaved */
 typedef struct {
     int32_t samples[appconfAUDIO_PIPELINE_FRAME_ADVANCE][appconfAUDIO_PIPELINE_REF_CHANNELS];
+    audio_quality_ref_drops_t drops;
 } ref_frame_t;
+
+/* Owned by the microphone input task, sampled from its dequeued reference. */
+static audio_quality_ref_drops_t input_reference_drops;
+
+audio_quality_ref_drops_t audio_pipeline_input_reference_drops(void)
+{
+    return input_reference_drops;
+}
 
 #if ON_TILE(SPEAKER_PIPELINE_TILE_NO)
 /* Holds ref_frame_t by value: speaker pipeline -> audio pipeline */
@@ -152,10 +162,17 @@ void speaker_pipeline_output(void *output_app_data,
      * the mic pipeline: if the AEC falls behind, the oldest reference is
      * dropped instead of stalling the DAC.
      */
+    static audio_quality_ref_drops_t reference_drops;
+    ref.drops = reference_drops;
     if (rtos_osal_queue_send(ref_input_queue, &ref, 0) != RTOS_OSAL_SUCCESS) {
         static ref_frame_t stale;
-        (void) rtos_osal_queue_receive(ref_input_queue, &stale, 0);
-        (void) rtos_osal_queue_send(ref_input_queue, &ref, 0);
+        const int oldest_discarded =
+            rtos_osal_queue_receive(ref_input_queue, &stale, 0) == RTOS_OSAL_SUCCESS;
+        audio_quality_account_reference_drops(&reference_drops, oldest_discarded, 0);
+        ref.drops = reference_drops;
+        const int newest_discarded =
+            rtos_osal_queue_send(ref_input_queue, &ref, 0) != RTOS_OSAL_SUCCESS;
+        audio_quality_account_reference_drops(&reference_drops, 0, newest_discarded);
     }
 
 #endif
@@ -194,6 +211,7 @@ void audio_pipeline_input(void *input_app_data,
     //read the speaker pipeline output as reference
     ref_frame_t ref_frame;
     (void) rtos_osal_queue_receive(ref_input_queue, &ref_frame, RTOS_OSAL_WAIT_FOREVER);
+    input_reference_drops = ref_frame.drops;
 
     for (int i=0; i<frame_count; i++) {
         ref[i] = ref_frame.samples[i][0];
@@ -244,6 +262,9 @@ void audio_pipeline_output(void *output_app_data,
         }
     }
     stage_stats_end(STAGE_STATS_T0_OUT_SRC, src_start);
+
+    /* Count exactly the final samples sent to I2S, including SRC overshoot. */
+    audio_quality_record_output(&tmp[0][0][0], appconfAUDIO_SPK_PIPELINE_FRAME_ADVANCE);
 
 #if ON_TILE(I2S_TILE_NO)
     rtos_i2s_tx(i2s_ctx,
@@ -370,6 +391,10 @@ void startup_task(void *arg)
 {
     rtos_printf("Startup task running from tile %d on core %d\n", THIS_XCORE_TILE, portGET_CORE_ID());
     stage_stats_init();
+#if ON_TILE(0)
+    audio_quality_init(appconfI2S_ENABLED ? AUDIO_QUALITY_OUTPUT_CHANNELS : 0,
+                       appconfI2S_ENABLED && SPEAKER_PIPELINE_TILE_NO == MICARRAY_TILE_NO);
+#endif
     voice_src_init();
     platform_start();
 

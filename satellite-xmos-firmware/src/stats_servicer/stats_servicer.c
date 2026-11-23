@@ -9,6 +9,7 @@
 #include "stats_servicer.h"
 #include "stats_cmds.h"
 #include "audio/stage_stats.h"
+#include "audio/audio_quality.h"
 
 #include "FreeRTOS.h"
 
@@ -16,6 +17,7 @@ static control_cmd_info_t stats_servicer_resid_cmd_map[] = {
     { STATS_SERVICER_CMD_STAGE_TIMES, 2 * STAGE_STATS_COUNT, sizeof(uint16_t), CMD_READ_ONLY },
     { STATS_SERVICER_CMD_STACK_FREE,  STAGE_STATS_COUNT,     sizeof(uint16_t), CMD_READ_ONLY },
     { STATS_SERVICER_CMD_HEAP_FREE,   4,                     sizeof(uint32_t), CMD_READ_ONLY },
+    { STATS_SERVICER_CMD_AUDIO_QUALITY, AUDIO_QUALITY_PAYLOAD_BYTES, sizeof(uint8_t), CMD_READ_ONLY },
 };
 
 //-----------------Servicer read write callback functions-----------------------//
@@ -64,6 +66,10 @@ static control_ret_t stats_servicer_read_cmd(control_resid_t resid, control_cmd_
         memcpy(payload_ptr, heap, sizeof(heap));
         break;
     }
+
+    case STATS_SERVICER_CMD_AUDIO_QUALITY:
+        audio_quality_read(payload_ptr);
+        break;
 
     default:
         ret = CONTROL_BAD_COMMAND;

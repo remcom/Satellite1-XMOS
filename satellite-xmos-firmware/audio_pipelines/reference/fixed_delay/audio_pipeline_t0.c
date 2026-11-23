@@ -88,6 +88,8 @@ static int audio_pipeline_output_i(frame_data_t *frame_data,
                           right,
                           appconfAUDIO_PIPELINE_FRAME_ADVANCE);
 
+    audio_quality_publish_frame(&frame_data->quality);
+
     frame_pool_put(&frame_pool, frame_data);
     return AUDIO_PIPELINE_DONT_FREE_FRAME;
 }
