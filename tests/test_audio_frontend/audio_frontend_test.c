@@ -217,6 +217,163 @@ static void test_doa_gated_during_playback(void)
     CHECK(!res.valid, "DOA must not update while the speaker plays");
 }
 
+static void make_detector_tone(int32_t *mics, unsigned frame, double hz, double amplitude)
+{
+    for (unsigned ch = 0; ch < 4; ch++) {
+        for (unsigned i = 0; i < DOA_FRAME_SIZE; i++) {
+            const double t = (double)(frame * DOA_FRAME_SIZE + i) / DOA_SAMPLE_RATE;
+            mics[ch * DOA_FRAME_SIZE + i] =
+                (int32_t)(2147483647.0 * amplitude * sin(2.0 * PI * hz * t));
+        }
+    }
+}
+
+static void test_doa_filtered_energy(void)
+{
+    const double hz[] = {25.0, 1000.0};
+    static doa_state_t st;
+    static int32_t mics[4 * DOA_FRAME_SIZE];
+    static int32_t original[4 * DOA_FRAME_SIZE];
+    for (unsigned tone_index = 0; tone_index < 2; tone_index++) {
+        doa_init(&st);
+        double filtered_energy = 0.0;
+        double raw_energy = 0.0;
+        for (unsigned frame = 0; frame < 96; frame++) {
+            make_detector_tone(mics, frame, hz[tone_index], 0.02);
+            memcpy(original, mics, sizeof(mics));
+            /* A falling floor takes this frame's energy exactly. */
+            st.noise_floor = 1.0f;
+            doa_process(&st, mics, 0);
+            CHECK(memcmp(mics, original, sizeof(mics)) == 0,
+                  "detector modified raw audio at %g Hz", hz[tone_index]);
+            if (frame >= 64) {
+                filtered_energy += st.noise_floor;
+                raw_energy += audio_mean_square_s32(mics, 4 * DOA_FRAME_SIZE);
+            }
+        }
+        const double ratio = filtered_energy / raw_energy;
+        if (tone_index == 0) {
+            CHECK(ratio < 0.005, "25 Hz detector energy ratio %g must reject rumble", ratio);
+        } else {
+            CHECK(ratio > 0.98 && ratio < 1.02,
+                  "1 kHz detector energy ratio %g must preserve speech-band energy", ratio);
+        }
+    }
+
+    /* A speech-band onset below the raw rumble floor must still count as speech. */
+    doa_init(&st);
+    for (unsigned frame = 0; frame < 64; frame++) {
+        make_detector_tone(mics, frame, 25.0, 0.02);
+        doa_process(&st, mics, 0);
+    }
+    const float rumble_floor = st.noise_floor;
+    for (unsigned frame = 64; frame < 72; frame++) {
+        make_detector_tone(mics, frame, 25.0, 0.02);
+        for (unsigned ch = 0; ch < 4; ch++) {
+            for (unsigned i = 0; i < DOA_FRAME_SIZE; i++) {
+                const double t = (double)(frame * DOA_FRAME_SIZE + i) / DOA_SAMPLE_RATE;
+                mics[ch * DOA_FRAME_SIZE + i] +=
+                    (int32_t)(2147483647.0 * 0.004 * sin(2.0 * PI * 1000.0 * t));
+            }
+        }
+        doa_process(&st, mics, 0);
+        CHECK(st.frames_since_speech == 0, "speech-band onset was masked by rumble");
+    }
+    CHECK(rumble_floor < 2e-6f, "rumble raised the filtered floor to %g", rumble_floor);
+
+    /* Equal raw levels: only the speech-band tone clears the absolute energy gate. */
+    for (unsigned tone_index = 0; tone_index < 2; tone_index++) {
+        doa_init(&st);
+        for (unsigned frame = 0; frame < 65; frame++) {
+            make_detector_tone(mics, frame, hz[tone_index], 0.0002);
+            if (frame == 64) {
+                st.noise_floor = 1e-12f;
+            }
+            doa_process(&st, mics, 0);
+        }
+        CHECK((st.frames_since_speech == 0) == (tone_index == 1),
+              "unexpected speech decision for quiet %g Hz tone", hz[tone_index]);
+    }
+}
+
+static void test_doa_energy_channel_state(void)
+{
+    static doa_state_t mixed;
+    static doa_state_t isolated[4];
+    static int32_t mics[4 * DOA_FRAME_SIZE];
+    static int32_t single[4 * DOA_FRAME_SIZE];
+    doa_init(&mixed);
+    for (unsigned ch = 0; ch < 4; ch++) {
+        doa_init(&isolated[ch]);
+    }
+    for (unsigned frame = 0; frame < 40; frame++) {
+        const double hz[] = {25.0, 300.0, 1000.0, 2500.0};
+        for (unsigned ch = 0; ch < 4; ch++) {
+            for (unsigned i = 0; i < DOA_FRAME_SIZE; i++) {
+                const double t = (double)(frame * DOA_FRAME_SIZE + i) / DOA_SAMPLE_RATE;
+                mics[ch * DOA_FRAME_SIZE + i] = (int32_t)(2147483647.0 *
+                    (0.01 * (ch + 1)) * sin(2.0 * PI * hz[ch] * t + ch));
+            }
+        }
+        mixed.noise_floor = 1.0f;
+        doa_process(&mixed, mics, 0);
+        double sum = 0.0;
+        for (unsigned ch = 0; ch < 4; ch++) {
+            memset(single, 0, sizeof(single));
+            memcpy(&single[ch * DOA_FRAME_SIZE], &mics[ch * DOA_FRAME_SIZE],
+                   DOA_FRAME_SIZE * sizeof(*mics));
+            isolated[ch].noise_floor = 1.0f;
+            doa_process(&isolated[ch], single, 0);
+            sum += isolated[ch].noise_floor;
+        }
+        CHECK(fabs(mixed.noise_floor - sum) < 1e-5 * sum,
+              "channel history leaked or channel weighting changed: %g vs %g",
+              mixed.noise_floor, sum);
+    }
+}
+
+static void test_doa_energy_startup_reset_and_hpf_switch(void)
+{
+    static doa_state_t st;
+    static doa_state_t fresh;
+    static int32_t mics[4 * DOA_FRAME_SIZE];
+    doa_init(&st);
+    for (unsigned i = 0; i < 4 * DOA_FRAME_SIZE; i++) {
+        mics[i] = 214748364; /* DC step: the filter starts with zero history. */
+    }
+    doa_process(&st, mics, 0);
+    CHECK(st.noise_floor > DOA_MIN_ENERGY && st.noise_floor < 0.01f,
+          "startup floor must use the filtered transient, got %g", st.noise_floor);
+    CHECK(st.frames_since_speech == DOA_RESET_FRAMES && !st.result.valid,
+          "first frame must initialise the floor without detecting speech");
+    for (unsigned frame = 0; frame < 64; frame++) {
+        doa_process(&st, mics, 1);
+    }
+    CHECK(st.noise_floor < DOA_MIN_ENERGY, "DC must decay even during playback");
+    memset(mics, 0, sizeof(mics));
+    for (unsigned frame = 0; frame < 64; frame++) {
+        doa_process(&st, mics, 0);
+    }
+    CHECK(st.noise_floor < DOA_MIN_ENERGY && !st.result.valid,
+          "silence after DC must settle without a stale result");
+
+    doa_init(&st);
+    doa_init(&fresh);
+    CHECK(memcmp(&st, &fresh, sizeof(st)) == 0, "reset left stale detector state");
+    audio_ctrl_init(20, MIC_MODE_PAIR_EW);
+    for (unsigned frame = 0; frame < 80; frame++) {
+        make_detector_tone(mics, frame, frame < 64 ? 25.0 : 1000.0, 0.02);
+        /* The main-audio switch must neither bypass nor reset detector filtering. */
+        audio_ctrl_set_hpf(1);
+        doa_process(&st, mics, 0);
+        audio_ctrl_set_hpf(0);
+        doa_process(&fresh, mics, 0);
+        CHECK(memcmp(&st, &fresh, sizeof(st)) == 0,
+              "audio HPF switch changed detector state at frame %u", frame);
+    }
+    audio_ctrl_set_hpf(1);
+}
+
 static void test_doa_playback_hangover(void)
 {
     static doa_state_t st;
@@ -1075,6 +1232,9 @@ int main(void)
     test_doa_gated_during_playback();
     test_doa_playback_hangover();
     test_doa_silence_is_invalid();
+    test_doa_filtered_energy();
+    test_doa_energy_channel_state();
+    test_doa_energy_startup_reset_and_hpf_switch();
     test_average_mode();
     test_fixed_pairs();
     test_auto_pair_switching();
