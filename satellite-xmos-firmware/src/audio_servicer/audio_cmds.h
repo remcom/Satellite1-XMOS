@@ -16,6 +16,7 @@ enum e_audio_servicer_cmds
   AUDIO_SERVICER_CMD_STEER_POLICY,  // read/write, 1 byte: steer_policy_t (0 = follow speech, 1 = wake word only, 2 = fixed)
   AUDIO_SERVICER_CMD_WAKE_EVENT,    // read/write, 1 byte: write 1 = wake word detected now, 0 = conversation ended; reads the conversation state
   AUDIO_SERVICER_CMD_REF_MIX,       // read/write, 1 byte: AEC reference, ref_mix_t (0 = (L+R)/2, 1 = left, 2 = right); match the speaker's channel setting
+  AUDIO_SERVICER_CMD_WAKE_TIMING,   // read, 8 bytes: how long the last wake word took to be reported, see docs/device-control-spi-protocol.md
 
   NUM_AUDIO_SERVICER_CMDS
 };
@@ -23,3 +24,9 @@ enum e_audio_servicer_cmds
 // AUDIO_SERVICER_CMD_DOA flags
 #define AUDIO_SERVICER_DOA_FLAG_VALID    (1 << 0)
 #define AUDIO_SERVICER_DOA_FLAG_UPDATED  (1 << 1)  // a new result since the previous DOA read
+
+// AUDIO_SERVICER_CMD_WAKE_TIMING
+#define AUDIO_SERVICER_WAKE_TIMING_VERSION        1
+#define AUDIO_SERVICER_WAKE_TIMING_BYTES          8
+#define AUDIO_SERVICER_WAKE_TIMING_FLAG_HANDLED   (1 << 0)  // a wake word was handled since boot
+#define AUDIO_SERVICER_WAKE_TIMING_FLAG_LOCATED   (1 << 1)  // and it was located

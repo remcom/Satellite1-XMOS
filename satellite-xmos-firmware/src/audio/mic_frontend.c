@@ -40,6 +40,7 @@ void mic_frontend_init(mic_frontend_state_t *state)
     state->mode = MIC_MODE_COUNT;
     state->steer_policy = STEER_POLICY_FOLLOW_SPEECH;
     state->wake_azimuth_deg = MIC_FRONTEND_NO_BEAM;
+    state->wake_newest_age = MIC_FRONTEND_NO_WAKE_AGE;
     beamformer_init(&state->beam, MIC_FRONTEND_BEAM_INITIAL_DEG);
 }
 
@@ -335,6 +336,29 @@ static int wake_direction(const mic_frontend_state_t *state, unsigned *azimuth_d
     return 0;
 }
 
+static void record_wake_timing(mic_frontend_state_t *state)
+{
+    state->wake_newest_age = MIC_FRONTEND_NO_WAKE_AGE;
+    if (state->doa_history_len > 0) {
+        const unsigned newest = (state->doa_history_next + MIC_FRONTEND_WAKE_HISTORY - 1) % MIC_FRONTEND_WAKE_HISTORY;
+        const uint32_t age = state->frame_count - state->doa_history[newest].frame;
+        state->wake_newest_age = (age < MIC_FRONTEND_NO_WAKE_AGE) ? (uint16_t)age : MIC_FRONTEND_NO_WAKE_AGE - 1;
+    }
+    unsigned results = 0;
+    for (unsigned i = 0; i < state->doa_history_len; i++) {
+        results += in_wake_window(state, &state->doa_history[i]);
+    }
+    state->wake_window_results = (uint8_t)results;
+}
+
+void mic_frontend_get_wake_timing(const mic_frontend_state_t *state,
+                                  uint16_t *newest_age_frames,
+                                  uint8_t *window_results)
+{
+    *newest_age_frames = state->wake_newest_age;
+    *window_results = state->wake_window_results;
+}
+
 /* Mic closest to azimuth_deg */
 static uint8_t facing_mic(unsigned azimuth_deg)
 {
@@ -353,6 +377,7 @@ int mic_frontend_wake_word(mic_frontend_state_t *state, mic_mode_t mode)
         state->conversation = 1;
     }
 
+    record_wake_timing(state);
     unsigned azimuth;
     if (!wake_direction(state, &azimuth)) {
         return 0;

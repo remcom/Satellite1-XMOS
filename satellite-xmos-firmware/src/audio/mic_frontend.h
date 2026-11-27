@@ -61,6 +61,8 @@ typedef enum {
 #define MIC_FRONTEND_BEAM_INITIAL_DEG       0
 /* mic_frontend_get_beam_azimuth() outside MIC_MODE_BEAM */
 #define MIC_FRONTEND_NO_BEAM                0xFFFF
+/* mic_frontend_get_wake_timing(): no DOA result in the history */
+#define MIC_FRONTEND_NO_WAKE_AGE            0xFFFF
 
 /*
  * What may move the BEAM steering and the AUTO_PAIR selection. A wake word
@@ -136,6 +138,9 @@ typedef struct {
     uint32_t doa_history_len;
     float idle_doa[MIC_FRONTEND_IDLE_DOA_BINS];    /* where idle speech came from, decaying histogram */
     uint16_t wake_azimuth_deg;   /* direction of the last located wake word, MIC_FRONTEND_NO_BEAM if none */
+    /* At the last wake word, for measuring the report latency (mic_frontend_get_wake_timing()) */
+    uint16_t wake_newest_age;    /* frames since the newest DOA result, MIC_FRONTEND_NO_WAKE_AGE if none */
+    uint8_t wake_window_results; /* DOA results in the wake word window */
     beamformer_t beam;
 } mic_frontend_state_t;
 
@@ -182,6 +187,18 @@ void mic_frontend_set_steering(mic_frontend_state_t *state,
  *         scattered DOA results
  */
 int mic_frontend_wake_word(mic_frontend_state_t *state, mic_mode_t mode);
+
+/**
+ * At the last mic_frontend_wake_word(): how many frames before it the newest
+ * DOA result was produced (MIC_FRONTEND_NO_WAKE_AGE if there was none), and
+ * how many DOA results were in the wake word window. In a quiet room the
+ * newest result is the end of the wake word, so the age is how long the
+ * wake word took to be reported, which MIC_FRONTEND_WAKE_LATENCY_FRAMES
+ * should cover.
+ */
+void mic_frontend_get_wake_timing(const mic_frontend_state_t *state,
+                                  uint16_t *newest_age_frames,
+                                  uint8_t *window_results);
 
 /**
  * Writes the two pipeline channels for the given mode. Outside BEAM it still

@@ -326,6 +326,7 @@ Commands:
 | `AUDIO_SERVICER_CMD_STEER_POLICY` | `8` | Read/write | 1 byte | 2 bytes |
 | `AUDIO_SERVICER_CMD_WAKE_EVENT` | `9` | Read/write | 1 byte | 2 bytes |
 | `AUDIO_SERVICER_CMD_REF_MIX` | `10` | Read/write | 1 byte | 2 bytes |
+| `AUDIO_SERVICER_CMD_WAKE_TIMING` | `11` | Read | 8 bytes | 9 bytes |
 
 Read responses start with the command status byte, like the other servicers:
 `[23, status, data...]` on the wire.
@@ -392,7 +393,28 @@ Read responses start with the command status byte, like the other servicers:
   ~28 dB echo reduction with the speaker on the left channel). Other values
   are rejected with `SERVICER_WRONG_PAYLOAD`.
 
-Writes to `DOA`, `MIC_PAIR` and `BEAM` are rejected with `CONTROL_BAD_COMMAND`.
+- `WAKE_TIMING`: how long the last wake word took to reach the device, to
+  check that the wake word window leaves out the right amount of time.
+  Filled within a frame of each `WAKE_EVENT` `1`, so read it ~30 ms later:
+
+  | Byte | Value |
+  | --- | --- |
+  | `0` | Payload version, `1` |
+  | `1` | Flags: bit 0 a wake word was handled since boot, bit 1 it was located |
+  | `2..3` | Number of that wake word since boot (`uint16`, wraps); compare with the previous read to tell a new one |
+  | `4..5` | Frames (15 ms) between the newest DOA result and the wake event (`uint16`), `0xFFFF` if there was none |
+  | `6` | DOA results in the wake word window |
+  | `7` | Frames the window leaves out before the wake event (`MIC_FRONTEND_WAKE_LATENCY_FRAMES`) |
+
+  In a quiet room the newest DOA result is the end of the wake word, so
+  bytes `4..5` are the time from the end of the wake word to the
+  `WAKE_EVENT` write: the I2S path, the wake word engine and the SPI write.
+  Room reverb makes it read a few frames short. Bytes `4..5` near `0` mean
+  the engine fired before the wake word ended, or that other sound was
+  located after it. Byte `7` should be at least the usual value of bytes
+  `4..5`, or the window takes in what was said after the wake word.
+
+Writes to `DOA`, `MIC_PAIR`, `BEAM` and `WAKE_TIMING` are rejected with `CONTROL_BAD_COMMAND`.
 
 Settings are not persisted; they return to the defaults on reset.
 
@@ -616,6 +638,9 @@ treat that as `fixed_delay`, the only variant those releases shipped.
 
 ### Unreleased (protocol stays `0x11`)
 
+- Added additive audio servicer command `AUDIO_SERVICER_CMD_WAKE_TIMING` (`11`).
+- The wake word is located from the ~0.75 s before the last ~300 ms instead
+  of the last ~1.5 s, and the DOA removes steady noise (see `WAKE_EVENT`).
 - Added additive audio servicer command `AUDIO_SERVICER_CMD_REF_MIX` (`10`).
   Both variants now cancel echo against one (mono) speaker reference.
 - `aec4`: the DOA also updates during playback (see `DOA`).

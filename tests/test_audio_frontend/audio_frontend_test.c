@@ -929,6 +929,12 @@ static void test_wake_word_steering(void)
     CHECK(st.beam.azimuth_deg == 120, "wake word steered to %u, expected 120", st.beam.azimuth_deg);
     CHECK(st.beam.fade, "a wake word steer must crossfade");
     CHECK(st.wake_azimuth_deg == 120, "wake direction %u", st.wake_azimuth_deg);
+    /* the wake timing: the newest DOA result was the report latency ago, all 10 in the window */
+    uint16_t age;
+    uint8_t results;
+    mic_frontend_get_wake_timing(&st, &age, &results);
+    CHECK(age == MIC_FRONTEND_WAKE_LATENCY_FRAMES && results == 10,
+          "wake timing: newest result %u frames old, %u in the window", age, results);
 
     /* ... also right after an earlier steer, and to the mean across 0 degrees */
     idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
@@ -955,6 +961,9 @@ static void test_wake_word_steering(void)
           "beam at %u, expected 200", st.beam.azimuth_deg);
     idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
     CHECK(!wake_word(&st, MIC_MODE_BEAM), "used DOA results older than the window");
+    mic_frontend_get_wake_timing(&st, &age, &results);
+    CHECK(age == 2 * MIC_FRONTEND_WAKE_LATENCY_FRAMES + MIC_FRONTEND_WAKE_WINDOW_FRAMES && results == 0,
+          "wake timing of an old result: %u frames, %u in the window", age, results);
 
     /* results spread all around (reverb, several talkers at once) give no direction */
     for (int i = 0; i < 40; i++) {
