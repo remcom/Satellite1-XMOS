@@ -17,6 +17,7 @@ enum e_audio_servicer_cmds
   AUDIO_SERVICER_CMD_WAKE_EVENT,    // read/write, 1 byte: write 1 = wake word detected now, 0 = conversation ended; reads the conversation state
   AUDIO_SERVICER_CMD_REF_MIX,       // read/write, 1 byte: AEC reference, ref_mix_t (0 = (L+R)/2, 1 = left, 2 = right); match the speaker's channel setting
   AUDIO_SERVICER_CMD_WAKE_TIMING,   // read, 8 bytes: how long the last wake word took to be reported, see docs/device-control-spi-protocol.md
+  AUDIO_SERVICER_CMD_CH1_AGC,       // read/write, 1 byte: 1 = level the right output channel (wake word) with its own AGC (default), 0 = fixed gain
 
   NUM_AUDIO_SERVICER_CMDS
 };

@@ -1469,6 +1469,128 @@ static void scenario_doa_reverb(void)
     }
 }
 
+/*
+ * Wake word channel level against how loud the talker is (default settings:
+ * PAIR_EW, ch1 = AEC+IC+NS, mic gain 20 dB), with ESPHome's micro_wake_word
+ * gain_factor 4 on top: the level the wake word engine gets and how much of
+ * it clips. talker_db is the raw mic level while talking.
+ */
+static void level_sweep_run(const rendered_t *r, int wake_agc, const char *label, int talker_db, float noise_db)
+{
+    sim_cfg_t c = base_cfg();
+    c.aec_ref_channels = 1;
+    c.wake_agc = wake_agc;
+    run_pair_t p = run_pair(r, &c);
+    /* the wake word engine's input: ch1 times the ESP32's gain_factor 4 */
+    const double host = 4.0;
+    for (int first = 1; first >= 0; first--) {
+        double e = 0.0, snr = 0.0, peak = 0.0;
+        size_t n = 0, clip = 0;
+        int nu = 0;
+        for (int u = first ? 0 : 3; u < (first ? 1 : 9); u += 3) {
+            const size_t a = r->utt_start[u], b = r->utt_start[u] + r->utt_len[u];
+            for (size_t i = a; i < b && i < p.a.ch1.n; i++) {
+                const double x = host * p.a.ch1.x[i];
+                e += x * x;
+                n++;
+                peak = fmax(peak, fabs(x));
+                clip += fabs(x) >= 0.999;
+            }
+            snr += snr_db(&p.a.ch1, &p.b.ch1, a, b);
+            nu++;
+        }
+        printf("{\"scenario\":\"level_sweep\",\"ch1\":\"%s\",\"wake\":\"%s\",\"noise_db\":%.0f,\"talker_db\":%d,"
+               "\"mww_rms_db\":%.1f,\"mww_peak_db\":%.1f,\"clip_pct\":%.2f,\"snr\":%.1f}\n",
+               label, first ? "first" : "later", noise_db, talker_db, DB(e / n), 20.0 * log10(peak + 1e-12),
+               100.0 * clip / n, snr / nu);
+    }
+    fflush(stdout);
+    free_pair(&p);
+}
+
+/*
+ * Wake word channel level against how loud the talker is (default settings:
+ * PAIR_EW, ch1 = AEC+IC+NS, mic gain 20 dB), as the wake word engine gets it
+ * after ESPHome's micro_wake_word gain_factor 4: fixed gain vs the wake word
+ * AGC (audio/wake_agc.h). talker_db is the raw mic level while talking; the
+ * first wake word of a scene is reported apart (the AGC starts at x4).
+ * SIM_LEVEL_NOISE=<dB> runs one noise level only.
+ */
+static void scenario_level_sweep(void)
+{
+    static const float noise[] = { -68.0f, -58.0f };
+    const char *only = getenv("SIM_LEVEL_NOISE");
+    for (int nz = 0; nz < 2; nz++) {
+        if (only && atof(only) != noise[nz]) {
+            continue;
+        }
+        for (int t = -75; t <= -25; t += 5) {
+            scene_t sc = base_scene("level_sweep", 32.0f);
+            sc.seed = 70;
+            sc.talker_db = (float)t;
+            sc.noise_db = noise[nz];
+            add_requests(&sc, 4.0f);
+            rendered_t r = render_scene(&sc);
+            level_sweep_run(&r, 0, "fixed", t, sc.noise_db);
+            level_sweep_run(&r, 1, "wake_agc", t, sc.noise_db);
+            free_rendered(&r);
+        }
+    }
+}
+
+/*
+ * The talker's level changes from request to request (soft, loud, normal):
+ * how the wake word AGC follows. Per wake word: level at the wake word engine.
+ */
+static void scenario_level_jump(void)
+{
+    static const float steps[] = { -50.0f, -62.0f, -36.0f };   /* normal, soft, loud */
+    for (int agc = 0; agc < 2; agc++) {
+        scene_t sc = base_scene("level_jump", 32.0f);
+        sc.seed = 71;
+        sc.talker_db = -50.0f;
+        add_requests(&sc, 4.0f);
+        rendered_t r = render_scene(&sc);
+        /* scale each request (wake word + commands) to its own level */
+        for (int q = 0; q < 3; q++) {
+            const float g = powf(10.0f, (steps[q] - sc.talker_db) / 20.0f);
+            const size_t a = r.utt_start[3 * q];
+            const size_t b = (q < 2) ? r.utt_start[3 * q + 3] : r.n;
+            for (unsigned m = 0; m < SIM_MICS; m++) {
+                for (size_t i = a; i < b; i++) {
+                    const float t = r.talker[m].x[i];
+                    r.mic[m].x[i] += (g - 1.0f) * t;
+                    r.speech[m].x[i] += (g - 1.0f) * t;
+                    r.talker[m].x[i] = g * t;
+                }
+            }
+        }
+        sim_cfg_t c = base_cfg();
+        c.aec_ref_channels = 1;
+        c.wake_agc = agc;
+        run_pair_t p = run_pair(&r, &c);
+        printf("{\"scenario\":\"level_jump\",\"ch1\":\"%s\"", agc ? "wake_agc" : "fixed");
+        for (int q = 0; q < 3; q++) {
+            const size_t a = r.utt_start[3 * q], b = a + r.utt_len[3 * q];
+            double e = 0.0, peak = 0.0;
+            size_t clip = 0;
+            for (size_t i = a; i < b; i++) {
+                const double x = 4.0 * p.a.ch1.x[i];
+                e += x * x;
+                peak = fmax(peak, fabs(x));
+                clip += fabs(x) >= 0.999;
+            }
+            printf(",\"wake%d\":{\"talker_db\":%.0f,\"mww_rms_db\":%.1f,\"mww_peak_db\":%.1f,\"clip_pct\":%.2f,\"snr\":%.1f}",
+                   q, steps[q], DB(e / (b - a)), 20.0 * log10(peak + 1e-12), 100.0 * clip / (b - a),
+                   snr_db(&p.a.ch1, &p.b.ch1, a, b));
+        }
+        printf("}\n");
+        fflush(stdout);
+        free_pair(&p);
+        free_rendered(&r);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -1496,5 +1618,7 @@ int main(int argc, char **argv)
     if (!strcmp(s, "beam_noise")) scenario_beam_noise();
     if (!strcmp(s, "wake_trace")) scenario_wake_trace();
     if (!strcmp(s, "doa_reverb")) scenario_doa_reverb();
+    if (!strcmp(s, "level_sweep")) scenario_level_sweep();
+    if (!strcmp(s, "level_jump")) scenario_level_jump();
     return 0;
 }

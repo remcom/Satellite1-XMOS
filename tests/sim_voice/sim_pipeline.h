@@ -32,6 +32,7 @@ typedef struct {
     int idle_select;        /* MIC_MODE_BEAM outside a conversation: steer at the fixed beam where speech just started;
                                2: the wake word steers there too, instead of at the DOA wake word direction */
     int mic_mismatch;       /* mics differ in gain (+-0.9 dB) and low frequency roll-off (50-100 Hz) */
+    int wake_agc;           /* level ch1 with audio/wake_agc.h (output at 1/WAKE_AGC_HOST_GAIN) */
 } sim_cfg_t;
 
 typedef struct {

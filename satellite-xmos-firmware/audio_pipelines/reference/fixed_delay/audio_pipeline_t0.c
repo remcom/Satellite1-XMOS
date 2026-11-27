@@ -17,6 +17,7 @@
 #include "generic_pipeline.h"
 #include "aec.h"
 #include "agc.h"
+#include "audio/wake_agc.h"
 #include "ic.h"
 #include "ns.h"
 #include "vnr_features_api.h"
@@ -40,6 +41,10 @@ static ic_stage_ctx_t DWORD_ALIGNED ic_stage_state = {};
 static vnr_pred_stage_ctx_t DWORD_ALIGNED vnr_pred_stage_state = {};
 static ns_stage_ctx_t DWORD_ALIGNED ns_stage_state = {};
 static agc_stage_ctx_t DWORD_ALIGNED agc_stage_state = {};
+#if !appconfAUDIO_PIPELINE_SKIP_AGC
+static wake_agc_t DWORD_ALIGNED wake_agc_state;
+static int wake_agc_on;
+#endif
 static vnr_hold_t vnr_hold;
 
 static frame_pool_t frame_pool;
@@ -66,21 +71,30 @@ static void *audio_pipeline_input_i(void *input_app_data)
     return frame_data;
 }
 
+/*
+ * The right output, by AUDIO_CTRL_T0_CH1_TAP(): AEC+IC+NS (default), AEC+IC
+ * or AEC only, levelled by the wake word AGC (AUDIO_CTRL_T0_CH1_AGC()) instead
+ * of channel 0's. When the IC or NS stage is skipped (bypass build) this
+ * buffer still holds reference channel 1.
+ */
+static int32_t *ch1_samples(frame_data_t *frame_data)
+{
+#if !appconfAUDIO_PIPELINE_SKIP_IC_AND_VNR && appconfAUDIO_PIPELINE_STORE_IC_AUDIO
+    if (AUDIO_CTRL_T0_CH1_TAP(frame_data->t0_ctrl) == CH1_TAP_IC) {
+        return frame_data->aec_reference_audio_samples[0];
+    }
+#endif
+    return frame_data->aec_reference_audio_samples[1];
+}
+
 static int audio_pipeline_output_i(frame_data_t *frame_data,
                                    void *output_app_data)
 {
     /*
      * left:  AEC+IC+NS+AGC
-     * right: without AGC, by AUDIO_CTRL_T0_CH1_TAP(): AEC+IC+NS (default),
-     *        AEC+IC or AEC only. When the IC or NS stage is skipped (bypass
-     *        build) this buffer still holds reference channel 1.
+     * right: the wake word channel, see ch1_samples()
      */
-    const int32_t *right = frame_data->aec_reference_audio_samples[1];
-#if !appconfAUDIO_PIPELINE_SKIP_IC_AND_VNR && appconfAUDIO_PIPELINE_STORE_IC_AUDIO
-    if (AUDIO_CTRL_T0_CH1_TAP(frame_data->t0_ctrl) == CH1_TAP_IC) {
-        right = frame_data->aec_reference_audio_samples[0];
-    }
-#endif
+    const int32_t *right = ch1_samples(frame_data);
     audio_pipeline_output(output_app_data,
                           frame_data->samples[0],
                           right,
@@ -195,6 +209,17 @@ static void stage_agc(frame_data_t *frame_data)
             frame_data->samples[0],
             frame_data->samples[0],
             &agc_stage_state.md);
+
+    if (AUDIO_CTRL_T0_CH1_AGC(frame_data->t0_ctrl)) {
+        if (!wake_agc_on) {
+            /* from the fixed gain it replaces, not from where it was when switched off */
+            wake_agc_init(&wake_agc_state);
+            wake_agc_on = 1;
+        }
+        wake_agc_process(&wake_agc_state, ch1_samples(frame_data), frame_data->vnr_pred);
+    } else {
+        wake_agc_on = 0;
+    }
 #endif
     stage_stats_end(STAGE_STATS_T0_AGC, start);
 }

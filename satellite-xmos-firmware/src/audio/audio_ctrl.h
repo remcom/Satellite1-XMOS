@@ -27,6 +27,7 @@ typedef enum {
  */
 #define AUDIO_CTRL_T0_CH1_TAP(word)     ((ch1_tap_t)((word) & 0xFF))
 #define AUDIO_CTRL_T0_IC_FAST_HOLD(word) (((word) >> 8) & 1)
+#define AUDIO_CTRL_T0_CH1_AGC(word)     (((word) >> 9) & 1)
 
 /* What the mono AEC reference is mixed from; must match what the speaker plays */
 typedef enum {
@@ -67,6 +68,10 @@ ref_mix_t audio_ctrl_get_ref_mix(void);
 
 /** tile 0 settings for frame_data_t.t0_ctrl, see AUDIO_CTRL_T0_*() */
 uint32_t audio_ctrl_get_t0_word(void);
+
+/** Level control of the wake word channel (audio/wake_agc.h); on by default. */
+void audio_ctrl_set_ch1_agc(unsigned enable);
+unsigned audio_ctrl_get_ch1_agc(void);
 
 /** High-pass filter (MIC_HPF_CUTOFF_HZ) on both pipeline channels before the AEC. */
 void audio_ctrl_set_hpf(unsigned enable);

@@ -1,8 +1,8 @@
 /*
  * Host replica of the fixed_delay pipeline (audio_pipeline_t1.c, then
  * audio_pipeline_t0.c), calling the firmware's own front end, DOA, beamformer,
- * high-pass, VNR hold and echo gate code and the lib_voice
- * AEC, IC and NS. Not modelled: the AGC (channel 0 only, not part of the wake
+ * high-pass, VNR hold, echo gate and wake word AGC code and the lib_voice
+ * AEC, IC and NS. Not modelled: the AGC of channel 0 (not part of the wake
  * word path), the 48 kHz resamplers and the I2S/SPI transport.
  */
 #include <math.h>
@@ -18,6 +18,7 @@
 #include "audio/mic_frontend.h"
 #include "audio/mic_hpf.h"
 #include "audio/vnr_hold.h"
+#include "audio/wake_agc.h"
 
 #include "sim_pipeline.h"
 #include "sim_sdbeam.h"
@@ -39,6 +40,7 @@ static mic_frontend_state_t fe;
 static mic_hpf_t hpf_lo;
 static mic_hpf_t hpf_hi;
 static vnr_hold_t vnr_hold;
+static wake_agc_t wake_agc;
 static echo_gate_t gate;
 static float vnr_ema;
 static uint32_t steer_seen;     /* beam azimuth << 8 | ch0 mic mask of the previous frame */
@@ -172,6 +174,7 @@ void sim_pipeline_init(const sim_cfg_t *c)
     aec_init(&aec, aec_mics(), aec_refs(), 10, 5, &tdist);
     ic_init(&ic);
     ns_init(&ns);
+    wake_agc_init(&wake_agc);
     doa_init(&doa);
     if (cfg.aec4 && cfg.doa_post_aec) {
         doa_set_playback_hangover(&doa, DOA_AEC_PLAYBACK_HANGOVER_FRAMES);
@@ -343,4 +346,8 @@ void sim_pipeline_frame(const int32_t raw_in[4][SIM_FRAME],
         memcpy(out->ch1, samples[0], sizeof(out->ch1));
     }
     memcpy(out->ch0, samples[0], sizeof(out->ch0));
+    /* stage_agc(): the VNR there is that of the IC output, here the oracle */
+    if (cfg.wake_agc) {
+        wake_agc_process(&wake_agc, out->ch1, f32_to_float_s32(vnr));
+    }
 }

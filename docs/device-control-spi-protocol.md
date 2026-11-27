@@ -327,6 +327,7 @@ Commands:
 | `AUDIO_SERVICER_CMD_WAKE_EVENT` | `9` | Read/write | 1 byte | 2 bytes |
 | `AUDIO_SERVICER_CMD_REF_MIX` | `10` | Read/write | 1 byte | 2 bytes |
 | `AUDIO_SERVICER_CMD_WAKE_TIMING` | `11` | Read | 8 bytes | 9 bytes |
+| `AUDIO_SERVICER_CMD_CH1_AGC` | `12` | Read/write | 1 byte | 2 bytes |
 
 Read responses start with the command status byte, like the other servicers:
 `[23, status, data...]` on the wire.
@@ -357,9 +358,19 @@ Read responses start with the command status byte, like the other servicers:
 - `CH1_TAP`: what the right I2S channel (channel 1) carries. The left channel
   is always AEC+IC+NS+AGC. `0` AEC+IC+NS (default), `1` AEC+IC, before the NS,
   `2` AEC only (the beam or mic after the echo canceller). None of them has
-  the AGC, so this is the channel to run a wake word engine on. Other values,
+  channel 0's AGC, so this is the channel to run a wake word engine on; see
+  `CH1_AGC` for its own level control. Other values,
   and `1` or `2` in a build that skips the IC (or does not store its output,
   for `1`), are rejected with `SERVICER_WRONG_PAYLOAD`.
+- `CH1_AGC`: `1` (default) levels channel 1 with an AGC of its own, made
+  for a wake word engine that multiplies the channel by 4 (ESPHome's
+  `micro_wake_word` `gain_factor: 4`): after that gain, speech peaks sit
+  around -9..-3 dBFS and are soft clipped above -6 dBFS, never reaching full
+  scale. It adapts on speech only, raising the gain by up to +18 dB over x4
+  at +0.2 dB a frame and lowering it by up to -20 dB at -0.5 dB a frame. `0`
+  gives the channel at the mic gain alone, as before (speech 5 dB above the
+  usual level then clips in a x4). Writing `1` restarts the AGC from x4.
+  Other values are rejected with `SERVICER_WRONG_PAYLOAD`.
 - `IC_FAST_HOLD`: `1` (default) stops the interference canceller adapting
   within one or two frames of speech onset. `0` keeps the lib_voice timing,
   which adapts for the first ~350-450 ms of an utterance and so partly cancels
@@ -639,6 +650,8 @@ treat that as `fixed_delay`, the only variant those releases shipped.
 ### Unreleased (protocol stays `0x11`)
 
 - Added additive audio servicer command `AUDIO_SERVICER_CMD_WAKE_TIMING` (`11`).
+- Added additive audio servicer command `AUDIO_SERVICER_CMD_CH1_AGC` (`12`),
+  on by default: channel 1 (wake word) now has a level control of its own.
 - The wake word is located from the ~0.75 s before the last ~300 ms instead
   of the last ~1.5 s, and the DOA removes steady noise (see `WAKE_EVENT`).
 - Added additive audio servicer command `AUDIO_SERVICER_CMD_REF_MIX` (`10`).
