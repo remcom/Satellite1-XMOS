@@ -57,7 +57,7 @@ int audio_ctrl_set_ch1_tap(unsigned tap);
 void audio_ctrl_set_ch1_taps(uint32_t taps);
 ch1_tap_t audio_ctrl_get_ch1_tap(void);
 
-/** Fast attack of the VNR that decides when the IC stops adapting (0 = fwk_voice EMA only). */
+/** Fast attack of the VNR that decides when the IC stops adapting (0 = lib_voice EMA only). */
 void audio_ctrl_set_ic_fast_hold(unsigned enable);
 unsigned audio_ctrl_get_ic_fast_hold(void);
 

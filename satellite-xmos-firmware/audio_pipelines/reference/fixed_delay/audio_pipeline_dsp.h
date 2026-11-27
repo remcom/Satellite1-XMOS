@@ -17,26 +17,34 @@
 #define AP_MAX_X_CHANNELS (2)
 #define AP_FRAME_ADVANCE (240)
 
-/* AEC config: appconfAUDIO_PIPELINE_AEC_MICS x appconfAUDIO_PIPELINE_AEC_REF_CHANNELS */
-#define AEC_MAX_Y_CHANNELS   (appconfAUDIO_PIPELINE_AEC_MICS)
-#define AEC_MAX_X_CHANNELS   (appconfAUDIO_PIPELINE_AEC_REF_CHANNELS)
+/*
+ * AEC config: appconfAUDIO_PIPELINE_AEC_MICS x appconfAUDIO_PIPELINE_AEC_REF_CHANNELS,
+ * 10 main and 5 shadow filter phases. lib_voice sizes the AEC state from the
+ * aec_conf.h that generate_schedule() makes for each tile target
+ * (satellite1.cmake), which defines AEC_MAX_Y_CHANNELS and the others.
+ */
 /* The AEC runs on the raw mics and the mic front end after it (aec4 build) */
 #define AP_AEC_ON_RAW_MICS   (appconfAUDIO_PIPELINE_AEC_MICS == appconfAUDIO_PIPELINE_MIC_COUNT)
-#define AEC_MAIN_FILTER_PHASES    (10)
-#define AEC_SHADOW_FILTER_PHASES    (5)
 
 /* Delay buffer config */
 #define MAX_DELAY_BUF_CHANNELS (2)
 #define DELAY_BUF_MAX_DELAY_MS                ( 150 )
 #define DELAY_BUF_MAX_DELAY_SAMPLES           ( 16000*DELAY_BUF_MAX_DELAY_MS/1000 )
 
-#include "aec_api.h"
-#include "aec/aec_memory_pool.h"
-#include "agc_api.h"
-#include "ic_api.h"
-#include "ns_api.h"
+#include "aec.h"
+#include "agc.h"
+#include "ic.h"
+#include "ns.h"
 #include "vnr_features_api.h"
 #include "vnr_inference_api.h"
+
+_Static_assert(AEC_MAX_Y_CHANNELS == appconfAUDIO_PIPELINE_AEC_MICS,
+               "generate_schedule() in satellite1.cmake must match appconfAUDIO_PIPELINE_AEC_MICS");
+_Static_assert(AEC_MAX_X_CHANNELS == appconfAUDIO_PIPELINE_AEC_REF_CHANNELS,
+               "generate_schedule() in satellite1.cmake must match appconfAUDIO_PIPELINE_AEC_REF_CHANNELS");
+
+/* The AEC task schedule generate_schedule() made for this target (single thread) */
+extern aec_task_distribution_t tdist;
 
 
 /* Frames in flight per tile: one per stage plus the inter-stage queues (depth 2 each) */
@@ -51,7 +59,10 @@ typedef struct {
     int32_t samples[appconfAUDIO_PIPELINE_CHANNELS][appconfAUDIO_PIPELINE_FRAME_ADVANCE];
 
     /* Below is additional context needed by other stages on a per frame basis */
-    int32_t vnr_pred_flag;
+    /* Smoothed VNR of the IC output, for the AGC */
+    float_s32_t vnr_pred;
+    /* aec_process_frame()'s reference active flag, held for HOLD_AEC_LIMIT_SECONDS */
+    int32_t ref_active_flag;
     float_s32_t max_ref_energy;
     float_s32_t aec_corr_factor;
     /* Tile 0 settings from audio_ctrl on tile 1, see AUDIO_CTRL_T0_*() */
@@ -91,19 +102,20 @@ typedef struct stage_delay_ctx {
 } stage_delay_ctx_t;
 
 typedef struct aec_ctx {
-    aec_state_t DWORD_ALIGNED aec_main_state;
-    aec_state_t DWORD_ALIGNED aec_shadow_state;
-    aec_shared_state_t DWORD_ALIGNED aec_shared_state;
-    uint8_t DWORD_ALIGNED aec_main_memory_pool[sizeof(aec_memory_pool_t)];
-    uint8_t DWORD_ALIGNED aec_shadow_memory_pool[sizeof(aec_shadow_filt_memory_pool_t)];
+    aec_state_t DWORD_ALIGNED state;
 } aec_ctx_t;
 
 typedef struct ic_stage_ctx {
     ic_state_t DWORD_ALIGNED state;
 } ic_stage_ctx_t;
 
+/*
+ * VNR of the IC output, which lib_voice's IC no longer computes: the AGC's
+ * VNR input, as fwk_voice's IC provided it.
+ */
 typedef struct vnr_pred_stage_ctx {
-    vnr_pred_state_t vnr_pred_state;
+    vnr_feature_state_t output_feature_state;
+    float_s32_t output_vnr_pred;
 } vnr_pred_stage_ctx_t;
 
 typedef struct ns_stage_ctx {
@@ -127,13 +139,5 @@ typedef struct agc_stage_ctx {
 #define AP_INPUT_SAMPLES_MIC_DELAY_SIZE_CUR_FRAME_WORDS ( AP_INPUT_SAMPLES_MIC_DELAY_CHAN_CNT * appconfAUDIO_PIPELINE_FRAME_ADVANCE)
 #define AP_INPUT_SAMPLES_MIC_DELAY_CUR_FRAME_BYTES      ( AP_INPUT_SAMPLES_MIC_DELAY_SIZE_CUR_FRAME_WORDS * sizeof(int32_t))
 #define AP_INPUT_SAMPLES_MIC_DELAY_BUF_SIZE_BYTES       ( AP_INPUT_SAMPLES_MIC_DELAY_SIZE_CHAN * sizeof(int32_t) )
-
-void aec_process_frame_1thread(
-        aec_state_t *main_state,
-        aec_state_t *shadow_state,
-        int32_t (*output_main)[AEC_FRAME_ADVANCE],
-        int32_t (*output_shadow)[AEC_FRAME_ADVANCE],
-        const int32_t (*y_data)[AEC_FRAME_ADVANCE],
-        const int32_t (*x_data)[AEC_FRAME_ADVANCE]);
 
 #endif /* AUDIO_PIPELINE_DSP_H_ */

@@ -35,7 +35,14 @@ foreach(FFVA_AP ${FFVA_PIPELINES_INT})
           appconfAUDIO_PIPELINE_AEC_MICS=4
           appconfAUDIO_PIPELINE_AEC_REF_CHANNELS=1
       )
+      set(AEC_MICS 4)
+    else()
+      set(AEC_MICS 2)
     endif()
+    # lib_voice AEC schedule: "<threads> <mics> <references> <main phases> <shadow phases>",
+    # as appconfAUDIO_PIPELINE_AEC_MICS/_REF_CHANNELS (checked in audio_pipeline_dsp.h).
+    # It writes the aec_conf.h that sizes the AEC state, and the tdist schedule.
+    set(AEC_SCHEDULE "1 ${AEC_MICS} 1 10 5")
 
     #**********************
     # Tile Targets
@@ -58,6 +65,7 @@ foreach(FFVA_AP ${FFVA_PIPELINES_INT})
             sln_voice::app::ffva::sp::passthrough
     )
     target_link_options(${TARGET_NAME} PRIVATE ${APP_LINK_OPTIONS})
+    generate_schedule(${TARGET_NAME} "${AEC_SCHEDULE}")
     unset(TARGET_NAME)
 
     set(TARGET_NAME tile1_satellite1_firmware_${FFVA_AP})
@@ -78,6 +86,7 @@ foreach(FFVA_AP ${FFVA_PIPELINES_INT})
             sln_voice::app::ffva::sp::passthrough
     )
     target_link_options(${TARGET_NAME} PRIVATE ${APP_LINK_OPTIONS})
+    generate_schedule(${TARGET_NAME} "${AEC_SCHEDULE}")
     unset(TARGET_NAME)
 
     #*********************

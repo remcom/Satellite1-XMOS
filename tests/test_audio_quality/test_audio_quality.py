@@ -8,7 +8,7 @@ from tests.conftest import PROJ_ROOT, SAT1_FIRMWARE_SRC
 
 CC = shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
 HERE = Path(__file__).resolve().parent
-XMATH = PROJ_ROOT / "modules/core/modules/xcore_math/lib_xcore_math/lib_xcore_math/api"
+XMATH = PROJ_ROOT / "modules/lib_xcore_math/lib_xcore_math/api"
 
 
 @pytest.mark.skipif(CC is None, reason="a host C compiler is required")

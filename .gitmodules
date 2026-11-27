@@ -14,29 +14,18 @@
 	path = modules/sample_rate_conversion/lib_src
 	url = git@github.com:xmos/lib_src.git
 	branch = master
-[submodule "modules/xua"]
-	path = modules/xua
-	url = git@github.com:xmos/lib_xua.git
-	branch = master
 [submodule "modules/sw_pll"]
 	path = modules/sw_pll
 	url = git@github.com:xmos/lib_sw_pll
 [submodule "modules/voice"]
 	path = modules/voice
-	url = git@github.com:xmos/fwk_voice.git
-[submodule "modules/inferencing/lib_tflite_micro"]
-	path = modules/inferencing/lib_tflite_micro
-	url = git@github.com:xmos/lib_tflite_micro.git
-	ignore = dirty
-[submodule "modules/inferencing/lib_nn"]
-	path = modules/inferencing/lib_nn
-	url = git@github.com:xmos/lib_nn.git
-[submodule "modules/inferencing/modules/lib_qspi_fast_read"]
-	path = modules/inferencing/modules/lib_qspi_fast_read
-	url = git@github.com:xmos/lib_qspi_fast_read.git
+	url = git@github.com:xmos/lib_voice.git
 [submodule "modules/lib_qspi_fast_read"]
 	path = modules/lib_qspi_fast_read
 	url = git@github.com:xmos/lib_qspi_fast_read.git
 [submodule "modules/xscope_fileio/xscope_fileio"]
 	path = modules/xscope_fileio/xscope_fileio
 	url = git@github.com:xmos/xscope_fileio.git
+[submodule "modules/lib_xcore_math"]
+	path = modules/lib_xcore_math
+	url = git@github.com:xmos/lib_xcore_math.git

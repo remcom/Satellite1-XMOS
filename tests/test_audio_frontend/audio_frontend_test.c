@@ -1175,7 +1175,7 @@ static void test_hpf(void)
 
 static void test_vnr_hold(void)
 {
-    /* noise to speech: the fwk_voice EMA needs ~23 frames to reach 0.5, the hold 1..2 */
+    /* noise to speech: the lib_voice EMA needs ~23 frames to reach 0.5, the hold 1..2 */
     vnr_hold_t hold;
     vnr_hold_init(&hold, 0.05f);
     int frames = 0;
@@ -1191,7 +1191,7 @@ static void test_vnr_hold(void)
     }
     CHECK(ema_frames >= 20, "the reference EMA took only %d frames", ema_frames);
 
-    /* falling, it decays like the fwk_voice EMA */
+    /* falling, it decays like the lib_voice EMA */
     vnr_hold_init(&hold, 0.9f);
     const float v = vnr_hold_update(&hold, 0.1f);
     CHECK(fabsf(v - (0.97f * 0.9f + 0.03f * 0.1f)) < 1e-6f, "release step gives %f", v);
