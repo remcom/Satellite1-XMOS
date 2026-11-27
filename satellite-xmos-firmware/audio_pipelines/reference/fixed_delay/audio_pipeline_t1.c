@@ -42,6 +42,10 @@
 #error The high-pass filter expects appconfAUDIO_PIPELINE_CHANNELS channels
 #endif
 
+#if AEC_MAX_Y_CHANNELS > AUDIO_QUALITY_MAX_AEC_CHANNELS
+#error Audio quality payload cannot represent this AEC channel count
+#endif
+
 #if AP_AEC_ON_RAW_MICS
 #if appconfAUDIO_PIPELINE_SKIP_AEC
 #error The aec4 build needs the AEC
@@ -103,6 +107,7 @@ static void *audio_pipeline_input_i(void *input_app_data)
     frame_data->vnr_pred_flag = 0;
     frame_data->aec_corr_factor = (float_s32_t){0, 0};
     frame_data->t0_ctrl = audio_ctrl_get_t0_word();
+    memset(&frame_data->quality, 0, sizeof(frame_data->quality));
 
 #if AP_AEC_ON_RAW_MICS
     int32_t *mics = &T1_FRAME(frame_data)->mics[0][0];
@@ -113,6 +118,7 @@ static void *audio_pipeline_input_i(void *input_app_data)
                          &frame_data->aec_reference_audio_samples[0][0],
                          mics,
                          appconfAUDIO_PIPELINE_FRAME_ADVANCE);
+    frame_data->quality.ref_drops = audio_pipeline_input_reference_drops();
 
     return frame_data;
 }
@@ -329,6 +335,13 @@ static void stage_aec(frame_data_t *frame_data)
             NULL,
             (const int32_t (*)[AEC_FRAME_ADVANCE])aec_io,
             frame_data->aec_reference_audio_samples);
+
+    /* Already smoothed by lib_aec; conversion to dB happens in the reader. */
+    frame_data->quality.aec_channels = AEC_MAX_Y_CHANNELS;
+    for (unsigned ch = 0; ch < AEC_MAX_Y_CHANNELS; ++ch) {
+        frame_data->quality.input_energy[ch] = aec_state.aec_shared_state.y_ema_energy[ch];
+        frame_data->quality.error_energy[ch] = aec_state.aec_main_state.error_ema_energy[ch];
+    }
 
 #if (appconfINPUT_SAMPLES_MIC_DELAY_MS < 0) && !appconfAUDIO_PIPELINE_SKIP_STATIC_DELAY
     /* stage_delay() delayed the reference after stage_frontend() measured it */

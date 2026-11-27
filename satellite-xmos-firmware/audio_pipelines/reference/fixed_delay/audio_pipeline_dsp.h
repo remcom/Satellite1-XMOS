@@ -10,6 +10,7 @@
 #include "stream_buffer.h"
 #include "app_conf.h"
 #include "audio/stage_stats.h"
+#include "audio/audio_quality.h"
 
 /* Pipeline config */
 #define AP_MAX_Y_CHANNELS (2)
@@ -57,6 +58,7 @@ typedef struct {
     uint32_t t0_ctrl;
     /* Tile 1 stage stats, passed on to tile 0 where the stats servicer reads them */
     stage_stats_t1_report_t t1_stats;
+    audio_quality_t1_report_t quality;
 
     /*
      * The speaker reference until the AEC has run. Afterwards reused:

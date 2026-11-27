@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "app_conf.h"
+#include "audio/audio_quality.h"
 
 /* Return values of a generic_pipeline output function */
 #define AUDIO_PIPELINE_DONT_FREE_FRAME 0
@@ -30,6 +31,10 @@ void audio_pipeline_input(
         int32_t *ref,
         int32_t *mics,
         size_t frame_count);
+
+/* Input task only, immediately after audio_pipeline_input(): totals carried by
+ * the dequeued reference frame. No cross-task reads of mutable counters. */
+audio_quality_ref_drops_t audio_pipeline_input_reference_drops(void);
 
 /**
  * Sends one block of processed audio to the host over I2S.
