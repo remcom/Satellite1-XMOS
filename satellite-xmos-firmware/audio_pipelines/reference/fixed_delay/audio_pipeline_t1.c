@@ -172,7 +172,11 @@ static void stage_frontend(frame_data_t *frame_data)
     if (wake_count != wake_count_seen) {
         /* Before the wake sound plays: the DOA results of the wake word are in the history */
         wake_count_seen = wake_count;
-        (void) mic_frontend_wake_word(&mic_frontend_state, mode);
+        const int located = mic_frontend_wake_word(&mic_frontend_state, mode);
+        uint16_t newest_age;
+        uint8_t window_results;
+        mic_frontend_get_wake_timing(&mic_frontend_state, &newest_age, &window_results);
+        audio_ctrl_publish_wake_timing(wake_count, newest_age, window_results, located);
     }
     mic_frontend_process(&mic_frontend_state,
                          mode,
@@ -254,7 +258,11 @@ static void stage_frontend_after_aec(frame_data_t *frame_data)
     if (wake_count != wake_count_seen) {
         /* Before the wake sound plays: the DOA results of the wake word are in the history */
         wake_count_seen = wake_count;
-        (void) mic_frontend_wake_word(&mic_frontend_state, mode);
+        const int located = mic_frontend_wake_word(&mic_frontend_state, mode);
+        uint16_t newest_age;
+        uint8_t window_results;
+        mic_frontend_get_wake_timing(&mic_frontend_state, &newest_age, &window_results);
+        audio_ctrl_publish_wake_timing(wake_count, newest_age, window_results, located);
     }
     mic_frontend_process(&mic_frontend_state,
                          mode,

@@ -95,6 +95,18 @@ unsigned audio_ctrl_get_conversation_held(void);
 void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_mask,
                         uint16_t beam_azimuth_deg, int lapsed);
 
+/**
+ * Called by the pipeline after it handled wake word wake_count
+ * (mic_frontend_get_wake_timing()); located: mic_frontend_wake_word() found a direction.
+ */
+void audio_ctrl_publish_wake_timing(uint32_t wake_count, uint16_t newest_age_frames,
+                                    uint8_t window_results, int located);
+/**
+ * The last published wake timing. \return 0 if no wake word was handled yet.
+ */
+int audio_ctrl_get_wake_timing(uint16_t *wake_count, uint16_t *newest_age_frames,
+                               uint8_t *window_results, int *located);
+
 /** Latest DOA result. `updated` is always 0: a frame-long flag is too short
  *  for a polling reader, use audio_ctrl_get_doa_update_count() instead. */
 doa_result_t audio_ctrl_get_doa(void);
