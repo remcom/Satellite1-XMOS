@@ -10,6 +10,7 @@
 #include "audio/audio_ctrl.h"
 #include "audio/beamformer.h"
 #include "audio/doa.h"
+#include "audio/echo_gate.h"
 #include "audio/mic_frontend.h"
 #include "audio/vnr_hold.h"
 
@@ -399,6 +400,62 @@ static void test_doa_playback_hangover(void)
     CHECK(first_update == DOA_PLAYBACK_HANGOVER_FRAMES - 1,
           "first DOA %d frames after playback, expected %d", first_update,
           DOA_PLAYBACK_HANGOVER_FRAMES - 1);
+}
+
+static void test_doa_short_hangover(void)
+{
+    /* after the AEC (aec4) the speaker tail is cancelled too: a short hangover */
+    static doa_state_t st;
+    static int32_t mics[4 * DOA_FRAME_SIZE];
+    doa_init(&st);
+    doa_set_playback_hangover(&st, DOA_AEC_PLAYBACK_HANGOVER_FRAMES);
+    unsigned frame = 0;
+    for (; frame < 20; frame++) {
+        make_frame(mics, frame, 90, 0.035, 0.0, 1e-4);
+        doa_process(&st, mics, 0);
+    }
+    for (; frame < 40; frame++) {
+        make_frame(mics, frame, 90, 0.035, 0.05, 1e-4);
+        CHECK(!doa_process(&st, mics, 1)->updated, "DOA updated while gated");
+    }
+    int first_update = -1;
+    for (int i = 0; i < DOA_AEC_PLAYBACK_HANGOVER_FRAMES + 5; i++, frame++) {
+        make_frame(mics, frame, 90, 0.035, 0.05, 1e-4);
+        if (doa_process(&st, mics, 0)->updated && first_update < 0) {
+            first_update = i;
+        }
+    }
+    CHECK(first_update == DOA_AEC_PLAYBACK_HANGOVER_FRAMES - 1,
+          "first DOA %d frames after playback, expected %d", first_update,
+          DOA_AEC_PLAYBACK_HANGOVER_FRAMES - 1);
+}
+
+static void test_echo_gate(void)
+{
+    echo_gate_t g;
+    echo_gate_init(&g);
+    CHECK(!echo_gate_update(&g, 0, 1e-4f, 1e-4f), "gated without playback");
+
+    /* the AEC has not converged yet: echo, whatever the ratio */
+    for (int i = 0; i < 20; i++) {
+        CHECK(echo_gate_update(&g, 1, 1e-4f, 0.5e-4f), "open before the AEC converged");
+    }
+    /* converged: residual echo 25 dB down; far end only stays gated */
+    for (int i = 0; i < 50; i++) {
+        CHECK(echo_gate_update(&g, 1, 1e-4f, 3e-7f), "open with echo only");
+    }
+    /* a talker over the residual echo opens it ... */
+    CHECK(!echo_gate_update(&g, 1, 1.2e-4f, 2e-5f), "a talker 18 dB over the residual did not open the gate");
+    /* ... a talker barely above it does not */
+    CHECK(echo_gate_update(&g, 1, 1e-4f, 1e-6f), "opened 5 dB over the residual echo");
+    /* silence in playback (a pause in the music) is not speech */
+    CHECK(echo_gate_update(&g, 1, 1e-14f, 1e-14f), "opened on silence");
+
+    /* the floor follows a worse echo path up, ~3 dB/s: after a few seconds the gate tracks it */
+    for (int i = 0; i < 400; i++) {
+        (void)echo_gate_update(&g, 1, 1e-4f, 3e-6f);
+    }
+    CHECK(g.floor > 2.9e-2f && g.floor < 3.1e-2f, "floor %g did not settle at the new ratio", g.floor);
 }
 
 static void test_doa_silence_is_invalid(void)
@@ -1191,6 +1248,12 @@ static void test_audio_ctrl(void)
     CHECK(audio_ctrl_set_ch1_tap(CH1_TAP_IC) == 0 && audio_ctrl_set_ch1_tap(CH1_TAP_NS) == 0,
           "rejected an available tap");
     audio_ctrl_set_ch1_taps(0);
+
+    /* reference mix */
+    CHECK(audio_ctrl_get_ref_mix() == REF_MIX_DOWNMIX, "default reference mix %u", audio_ctrl_get_ref_mix());
+    CHECK(audio_ctrl_set_ref_mix(REF_MIX_COUNT) != 0, "accepted an unknown mix");
+    CHECK(audio_ctrl_set_ref_mix(REF_MIX_LEFT) == 0 && audio_ctrl_get_ref_mix() == REF_MIX_LEFT, "mix not set");
+
     CHECK(audio_ctrl_set_ch1_tap(CH1_TAP_NS) == 0, "rejected the NS tap");
 }
 
@@ -1231,6 +1294,8 @@ int main(void)
     test_doa_rejects_implausible_delays();
     test_doa_gated_during_playback();
     test_doa_playback_hangover();
+    test_doa_short_hangover();
+    test_echo_gate();
     test_doa_silence_is_invalid();
     test_doa_filtered_energy();
     test_doa_energy_channel_state();

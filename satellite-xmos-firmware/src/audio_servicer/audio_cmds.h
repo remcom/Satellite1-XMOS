@@ -15,6 +15,7 @@ enum e_audio_servicer_cmds
   AUDIO_SERVICER_CMD_HPF,           // read/write, 1 byte: 1 = 100 Hz high-pass before the AEC, 0 = off
   AUDIO_SERVICER_CMD_STEER_POLICY,  // read/write, 1 byte: steer_policy_t (0 = follow speech, 1 = wake word only, 2 = fixed)
   AUDIO_SERVICER_CMD_WAKE_EVENT,    // read/write, 1 byte: write 1 = wake word detected now, 0 = conversation ended; reads the conversation state
+  AUDIO_SERVICER_CMD_REF_MIX,       // read/write, 1 byte: AEC reference, ref_mix_t (0 = (L+R)/2, 1 = left, 2 = right); match the speaker's channel setting
 
   NUM_AUDIO_SERVICER_CMDS
 };

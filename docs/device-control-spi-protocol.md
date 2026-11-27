@@ -325,6 +325,7 @@ Commands:
 | `AUDIO_SERVICER_CMD_HPF` | `7` | Read/write | 1 byte | 2 bytes |
 | `AUDIO_SERVICER_CMD_STEER_POLICY` | `8` | Read/write | 1 byte | 2 bytes |
 | `AUDIO_SERVICER_CMD_WAKE_EVENT` | `9` | Read/write | 1 byte | 2 bytes |
+| `AUDIO_SERVICER_CMD_REF_MIX` | `10` | Read/write | 1 byte | 2 bytes |
 
 Read responses start with the command status byte, like the other servicers:
 `[23, status, data...]` on the wire.
@@ -342,9 +343,11 @@ Read responses start with the command status byte, like the other servicers:
   while the result is valid (produced within the last ~0.5 s). Bit `1` is set
   when at least one new result was produced since the previous `DOA` read, so
   a host polling at any rate sees every update; the read clears it. The DOA
-  only updates during speech while no audio is played back, and stays paused
-  for ~400 ms after playback stops so the speaker tail and room reverb do not
-  steer it.
+  only updates during speech. In `fixed_delay` it pauses while audio is played
+  back and for ~400 ms after, so the speaker tail and room reverb do not steer
+  it. In `aec4` it runs on the echo cancelled mics and also updates during
+  playback, in the frames where the talker is ~10 dB above the residual echo
+  once the AEC has converged; it pauses for 60 ms after playback stops.
 - `MIC_PAIR`: bitmask of the mics feeding pipeline channel 0, then channel 1.
   Bit `0` North, bit `1` South, bit `2` East, bit `3` West. Both are `0x0F` in
   beam mode.
@@ -381,6 +384,12 @@ Read responses start with the command status byte, like the other servicers:
   that limit, with or without a `0` in between. Reads return `1` while the
   steering is held for a conversation: `0` after a `0` was written or once
   the 60 s ran out. Other values are rejected with `SERVICER_WRONG_PAYLOAD`.
+- `REF_MIX`: what the AEC's mono speaker reference is mixed from. Must match
+  what the speaker plays: `0` (L+R)/2 (default, the TAS2780 "Mono (Left +
+  Right)" mode), `1` left, `2` right. A reference that does not match the
+  speaker leaves most of the echo in the output (simulated: ~8 dB instead of
+  ~28 dB echo reduction with the speaker on the left channel). Other values
+  are rejected with `SERVICER_WRONG_PAYLOAD`.
 
 Writes to `DOA`, `MIC_PAIR` and `BEAM` are rejected with `CONTROL_BAD_COMMAND`.
 
@@ -603,6 +612,12 @@ built before this command existed answers `CONTROL_BAD_COMMAND`; hosts should
 treat that as `fixed_delay`, the only variant those releases shipped.
 
 ## Changelog
+
+### Unreleased (protocol stays `0x11`)
+
+- Added additive audio servicer command `AUDIO_SERVICER_CMD_REF_MIX` (`10`).
+  Both variants now cancel echo against one (mono) speaker reference.
+- `aec4`: the DOA also updates during playback (see `DOA`).
 
 ### v2.0.0 (protocol stays `0x11`)
 

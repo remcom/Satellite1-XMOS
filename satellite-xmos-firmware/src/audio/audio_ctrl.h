@@ -28,6 +28,14 @@ typedef enum {
 #define AUDIO_CTRL_T0_CH1_TAP(word)     ((ch1_tap_t)((word) & 0xFF))
 #define AUDIO_CTRL_T0_IC_FAST_HOLD(word) (((word) >> 8) & 1)
 
+/* What the mono AEC reference is mixed from; must match what the speaker plays */
+typedef enum {
+    REF_MIX_DOWNMIX = 0,    /* (L+R)/2: the TAS2780 "Mono (Left + Right)" default */
+    REF_MIX_LEFT    = 1,
+    REF_MIX_RIGHT   = 2,
+    REF_MIX_COUNT
+} ref_mix_t;
+
 /** Also sets the defaults of the settings below (see the audio servicer commands). */
 void audio_ctrl_init(unsigned mic_gain_db, mic_mode_t mic_mode);
 
@@ -52,6 +60,10 @@ ch1_tap_t audio_ctrl_get_ch1_tap(void);
 /** Fast attack of the VNR that decides when the IC stops adapting (0 = fwk_voice EMA only). */
 void audio_ctrl_set_ic_fast_hold(unsigned enable);
 unsigned audio_ctrl_get_ic_fast_hold(void);
+
+/** \return 0 on success, -1 for an unknown mix */
+int audio_ctrl_set_ref_mix(unsigned mix);
+ref_mix_t audio_ctrl_get_ref_mix(void);
 
 /** tile 0 settings for frame_data_t.t0_ctrl, see AUDIO_CTRL_T0_*() */
 uint32_t audio_ctrl_get_t0_word(void);

@@ -26,6 +26,7 @@ static control_cmd_info_t audio_servicer_resid_cmd_map[] = {
     { AUDIO_SERVICER_CMD_HPF,          1, sizeof(uint8_t), CMD_READ_WRITE },
     { AUDIO_SERVICER_CMD_STEER_POLICY, 1, sizeof(uint8_t), CMD_READ_WRITE },
     { AUDIO_SERVICER_CMD_WAKE_EVENT,   1, sizeof(uint8_t), CMD_READ_WRITE },
+    { AUDIO_SERVICER_CMD_REF_MIX,      1, sizeof(uint8_t), CMD_READ_WRITE },
 };
 
 //-----------------Servicer read write callback functions-----------------------//
@@ -104,6 +105,10 @@ static control_ret_t audio_servicer_read_cmd(control_resid_t resid, control_cmd_
         payload_ptr[0] = (uint8_t) audio_ctrl_get_conversation_held();
         break;
 
+    case AUDIO_SERVICER_CMD_REF_MIX:
+        payload_ptr[0] = (uint8_t) audio_ctrl_get_ref_mix();
+        break;
+
     default:
         ret = CONTROL_BAD_COMMAND;
         break;
@@ -178,6 +183,12 @@ static control_ret_t audio_servicer_write_cmd(control_resid_t resid, control_cmd
             ret = SERVICER_WRONG_PAYLOAD;
         } else {
             audio_ctrl_wake_event(payload[0]);
+        }
+        break;
+
+    case AUDIO_SERVICER_CMD_REF_MIX:
+        if (audio_ctrl_set_ref_mix(payload[0]) != 0) {
+            ret = SERVICER_WRONG_PAYLOAD;
         }
         break;
 

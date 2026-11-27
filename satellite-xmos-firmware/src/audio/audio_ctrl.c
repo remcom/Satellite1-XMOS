@@ -13,6 +13,7 @@ static volatile uint32_t ch1_tap;
 /* Bit per ch1_tap_t this build's tile 0 pipeline can produce */
 static volatile uint32_t ch1_taps;
 static volatile uint32_t ic_fast_hold;
+static volatile uint32_t ref_mix;
 static volatile uint32_t hpf;
 static volatile uint32_t steer_policy;
 static volatile uint32_t conversation;
@@ -39,6 +40,7 @@ void audio_ctrl_init(unsigned gain_db, mic_mode_t mode)
     ch1_tap = CH1_TAP_NS;
     ch1_taps = (1u << CH1_TAP_COUNT) - 1;
     ic_fast_hold = 1;
+    ref_mix = REF_MIX_DOWNMIX;
     hpf = 1;
     steer_policy = STEER_POLICY_FOLLOW_SPEECH;
     conversation = 0;
@@ -114,6 +116,20 @@ void audio_ctrl_set_ic_fast_hold(unsigned enable)
 unsigned audio_ctrl_get_ic_fast_hold(void)
 {
     return ic_fast_hold;
+}
+
+int audio_ctrl_set_ref_mix(unsigned mix)
+{
+    if (mix >= REF_MIX_COUNT) {
+        return -1;
+    }
+    ref_mix = mix;
+    return 0;
+}
+
+ref_mix_t audio_ctrl_get_ref_mix(void)
+{
+    return (ref_mix_t) ref_mix;
 }
 
 uint32_t audio_ctrl_get_t0_word(void)

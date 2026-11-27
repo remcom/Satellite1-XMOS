@@ -75,10 +75,19 @@ typedef struct {
     uint32_t frames_since_speech;
     uint32_t frames_since_result;
     uint32_t frames_since_playback;
+    uint32_t playback_hangover_frames;  /* DOA_PLAYBACK_HANGOVER_FRAMES unless doa_set_playback_hangover() */
     doa_result_t result;
 } doa_state_t;
 
 void doa_init(doa_state_t *state);
+
+/**
+ * Frames the estimate stays gated after playback_active drops. On raw mics
+ * the speaker tail and room reverb need DOA_PLAYBACK_HANGOVER_FRAMES; after
+ * an AEC, which cancels them too, a few frames are enough.
+ */
+#define DOA_AEC_PLAYBACK_HANGOVER_FRAMES 4   /* 60 ms */
+void doa_set_playback_hangover(doa_state_t *state, unsigned frames);
 
 /**
  * Processes one frame. Speech energy and the noise floor use a private 100 Hz
@@ -90,8 +99,8 @@ void doa_init(doa_state_t *state);
  *                        samples, word aligned (read by the VPU)
  * \param playback_active non-zero while the speaker plays audio; the echo would
  *                        otherwise steer the estimate towards the speaker. The
- *                        estimate stays gated for DOA_PLAYBACK_HANGOVER_FRAMES
- *                        after playback stops.
+ *                        estimate stays gated for the playback hangover
+ *                        (doa_set_playback_hangover()) after playback stops.
  * \return                the current result (also kept in state->result)
  */
 const doa_result_t *doa_process(doa_state_t *state,

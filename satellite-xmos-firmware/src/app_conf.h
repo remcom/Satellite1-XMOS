@@ -29,18 +29,24 @@
 
 /*
  * Channels the AEC cancels echo on, and reference channels it models.
- * 2 / 2 (default): the mic front end reduces the four mics to the two pipeline
- * channels first, the AEC models both speaker channels.
- * 4 / 1 (aec4 build): the AEC runs on all four mics against a mono (L+R)/2
- * reference, which is what the single TAS2780 speaker plays by default; the
- * mic front end (pairs, beam) runs on the echo cancelled mics, so re-steering
- * never disturbs the AEC.
+ * 2 / 1 (default): the mic front end reduces the four mics to the two pipeline
+ * channels first.
+ * 4 / 1 (aec4 build): the AEC runs on all four mics; the mic front end (pairs,
+ * beam) runs on the echo cancelled mics, so re-steering never disturbs the AEC.
+ *
+ * One reference: the single TAS2780 speaker plays one signal, by default the
+ * (L+R)/2 downmix (AUDIO_SERVICER_CMD_REF_MIX selects what the reference is
+ * mixed from). Modelling L and R separately (2 references) gives the stereo
+ * echo canceller's non-unique solution: with correlated L and R the filters
+ * settle anywhere along a line of equally good fits, and every change in the
+ * L/R correlation (a new song, a new mix section) makes them misfit again.
+ * Simulated (tests/sim_voice): ~13 dB worse ERLE with stereo music.
  */
 #ifndef appconfAUDIO_PIPELINE_AEC_MICS
 #define appconfAUDIO_PIPELINE_AEC_MICS          appconfAUDIO_PIPELINE_CHANNELS
 #endif
 #ifndef appconfAUDIO_PIPELINE_AEC_REF_CHANNELS
-#define appconfAUDIO_PIPELINE_AEC_REF_CHANNELS  appconfAUDIO_PIPELINE_REF_CHANNELS
+#define appconfAUDIO_PIPELINE_AEC_REF_CHANNELS  1
 #endif
 
 /* Mic gain in dB, applied after the AEC. Runtime adjustable via the audio servicer. */
