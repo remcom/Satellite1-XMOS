@@ -14,6 +14,10 @@
 #error DOA_FFT_N must hold a whole frame
 #endif
 
+#if 4 % MIC_HPF_CHANNELS != 0 || DOA_SAMPLE_RATE != MIC_HPF_SAMPLE_RATE
+#error The detector high-pass must cover all four mics at the DOA sample rate
+#endif
+
 #if DOA_BIN_LO < 1 || DOA_BIN_HI >= DOA_FFT_N / 2
 #error DOA band must stay clear of DC and Nyquist (packed together in bin 0 of the real FFT)
 #endif
@@ -24,6 +28,9 @@ enum { PAIR_NS = 0, PAIR_EW = 1 };
 void doa_init(doa_state_t *state)
 {
     memset(state, 0, sizeof(*state));
+    for (unsigned i = 0; i < 4 / MIC_HPF_CHANNELS; i++) {
+        mic_hpf_init(&state->energy_hpf[i]);
+    }
     for (unsigned i = 0; i < DOA_BIN_COUNT; i++) {
         const float phase = 2.0f * DOA_PI * (float)(DOA_BIN_LO + i) / (float)DOA_IFFT_N;
         state->lag_step[i].re = cosf(phase);
@@ -193,7 +200,19 @@ const doa_result_t *doa_process(doa_state_t *state,
                                 const int32_t *mics,
                                 int playback_active)
 {
-    const float energy = audio_mean_square_s32(mics, 4 * DOA_FRAME_SIZE);
+    /*
+     * Reuse FFT storage before estimate() overwrites it. Keep the channels
+     * packed at FRAME_SIZE here (the FFT later uses FFT_N strides). Private
+     * filters leave the raw mics and the configurable audio-path HPF alone:
+     * no extra audio filtering, beam delay, or change to the PHAT input.
+     */
+    int32_t *filtered = &state->fft_buf[0][0];
+    memcpy(filtered, mics, 4 * DOA_FRAME_SIZE * sizeof(*mics));
+    for (unsigned i = 0; i < 4 / MIC_HPF_CHANNELS; i++) {
+        mic_hpf_process(&state->energy_hpf[i],
+                        &filtered[i * MIC_HPF_CHANNELS * DOA_FRAME_SIZE], DOA_FRAME_SIZE);
+    }
+    const float energy = audio_mean_square_s32(filtered, 4 * DOA_FRAME_SIZE);
 
     /* Minimum-tracking noise floor: drops at once, rises slowly. */
     if (state->noise_floor <= 0.0f || energy < state->noise_floor) {

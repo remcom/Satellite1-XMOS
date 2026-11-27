@@ -363,7 +363,11 @@ Read responses start with the command status byte, like the other servicers:
   pointing elsewhere). The filter leakage during speech keeps the fwk_voice
   timing either way.
 - `HPF`: `1` (default) high-passes both pipeline channels at 100 Hz before the
-  AEC, `0` turns it off.
+  AEC (all four raw mics before the AEC in `aec4`), `0` turns it off. Re-enabling
+  clears the audio filter history. This setting controls the audio path; the DOA
+  speech-energy/noise-floor detector always uses a separate 100 Hz high-pass copy
+  of the four mics, with independent per-channel history. It does not add another
+  filter to the audio path or alter the DOA playback gate.
 - `STEER_POLICY`: what may move the beam (mic mode `4`) and the automatic
   pair (mode `3`). `0` any speech (default), `1` only wake words, `2` nothing.
   Under `0` and `1` a wake event steers at once. Other values are rejected with

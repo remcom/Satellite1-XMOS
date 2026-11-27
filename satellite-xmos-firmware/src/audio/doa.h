@@ -2,6 +2,8 @@
 
 #include <stdint.h>
 
+#include "audio/mic_hpf.h"
+
 /*
  * Direction-of-arrival estimation for the Satellite1 4-mic ring.
  *
@@ -63,8 +65,9 @@ typedef struct {
 } doa_result_t;
 
 typedef struct {
-    /* windowed, zero padded mics (N, S, E, W); the VPU FFT turns each into its spectrum in place */
+    /* Scratch: packed detector input first, then windowed/padded mics and VPU spectra. */
     int32_t fft_buf[4][DOA_FFT_N] __attribute__((aligned(8)));
+    mic_hpf_t energy_hpf[4 / MIC_HPF_CHANNELS]; /* independent history for N, S, E, W */
     int32_t window_q30[DOA_FRAME_SIZE] __attribute__((aligned(8)));
     doa_complex_t lag_step[DOA_BIN_COUNT];      /* e^(j 2 pi k / DOA_IFFT_N): one lag step per band bin */
     doa_complex_t cross[2][DOA_BIN_COUNT];      /* smoothed PHAT cross spectra over the band: NS, EW */
@@ -78,7 +81,10 @@ typedef struct {
 void doa_init(doa_state_t *state);
 
 /**
- * Processes one frame.
+ * Processes one frame. Speech energy and the noise floor use a private 100 Hz
+ * high-pass copy of all four mics, independent of AUDIO_SERVICER_CMD_HPF. The
+ * input and the GCC-PHAT/beam audio path are unchanged. Filter history advances
+ * on every frame (including silence and playback); doa_init() clears it.
  *
  * \param mics            4 channels (North, South, East, West) of DOA_FRAME_SIZE
  *                        samples, word aligned (read by the VPU)

@@ -57,6 +57,11 @@ not clipped before the AEC can cancel it.
 The direction of arrival (DOA) is estimated with GCC-PHAT on the North/South and
 East/West pairs during speech, and only while no audio is played back. It can be read
 by the host and optionally shown on the LED ring (`LED_RING_SERVICER_CMD_DOA_INDICATOR`).
+The speech-energy detector and its noise floor use a private 100 Hz high-pass copy
+of all four mics. This filtering is always active, including when the configurable
+audio HPF is off; it does not filter the streamed audio or change beam timing.
+The audio HPF remains enabled by default and resets its history when re-enabled.
+See [DOA detector energy](docs/doa-detector-energy.md) for validation and limitations.
 
 ## Firmware Files
 
