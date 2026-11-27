@@ -27,6 +27,7 @@ static control_cmd_info_t audio_servicer_resid_cmd_map[] = {
     { AUDIO_SERVICER_CMD_STEER_POLICY, 1, sizeof(uint8_t), CMD_READ_WRITE },
     { AUDIO_SERVICER_CMD_WAKE_EVENT,   1, sizeof(uint8_t), CMD_READ_WRITE },
     { AUDIO_SERVICER_CMD_REF_MIX,      1, sizeof(uint8_t), CMD_READ_WRITE },
+    { AUDIO_SERVICER_CMD_WAKE_TIMING,  AUDIO_SERVICER_WAKE_TIMING_BYTES, sizeof(uint8_t), CMD_READ_ONLY },
 };
 
 //-----------------Servicer read write callback functions-----------------------//
@@ -108,6 +109,25 @@ static control_ret_t audio_servicer_read_cmd(control_resid_t resid, control_cmd_
     case AUDIO_SERVICER_CMD_REF_MIX:
         payload_ptr[0] = (uint8_t) audio_ctrl_get_ref_mix();
         break;
+
+    case AUDIO_SERVICER_CMD_WAKE_TIMING:
+    {
+        uint16_t wake_count;
+        uint16_t newest_age;
+        uint8_t window_results;
+        int located;
+        const int handled = audio_ctrl_get_wake_timing(&wake_count, &newest_age, &window_results, &located);
+        payload_ptr[0] = AUDIO_SERVICER_WAKE_TIMING_VERSION;
+        payload_ptr[1] = (handled ? AUDIO_SERVICER_WAKE_TIMING_FLAG_HANDLED : 0) |
+                         (handled && located ? AUDIO_SERVICER_WAKE_TIMING_FLAG_LOCATED : 0);
+        payload_ptr[2] = (uint8_t)(wake_count & 0xFF);
+        payload_ptr[3] = (uint8_t)(wake_count >> 8);
+        payload_ptr[4] = (uint8_t)(newest_age & 0xFF);
+        payload_ptr[5] = (uint8_t)(newest_age >> 8);
+        payload_ptr[6] = window_results;
+        payload_ptr[7] = MIC_FRONTEND_WAKE_LATENCY_FRAMES;
+        break;
+    }
 
     default:
         ret = CONTROL_BAD_COMMAND;

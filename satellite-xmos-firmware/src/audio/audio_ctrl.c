@@ -26,6 +26,9 @@ static volatile uint32_t conversation_lapsed;
 static volatile uint32_t doa_word;
 /* Incremented after doa_word whenever the DOA produced a new result */
 static volatile uint32_t doa_update_count;
+/* newest_age[15:0] | window_results[23:16] | located[24] | handled[25], then wake_count[15:0] */
+static volatile uint32_t wake_timing_word;
+static volatile uint32_t wake_timing_count;
 /* ch0_mask[7:0] | ch1_mask[15:8] | beam_azimuth[31:16] */
 static volatile uint32_t frontend_word;
 
@@ -48,6 +51,8 @@ void audio_ctrl_init(unsigned gain_db, mic_mode_t mode)
     conversation_lapsed = 0;
     doa_word = 0;
     doa_update_count = 0;
+    wake_timing_word = 0;
+    wake_timing_count = 0;
     frontend_word = MIC_MASK(MIC_IDX_EAST) | (MIC_MASK(MIC_IDX_WEST) << 8) |
                     ((uint32_t)MIC_FRONTEND_NO_BEAM << 16);
 }
@@ -198,6 +203,31 @@ void audio_ctrl_publish(const doa_result_t *doa, uint8_t ch0_mask, uint8_t ch1_m
     }
     frontend_word = (uint32_t)ch0_mask | ((uint32_t)ch1_mask << 8) |
                     ((uint32_t)beam_azimuth_deg << 16);
+}
+
+void audio_ctrl_publish_wake_timing(uint32_t wake_count, uint16_t newest_age_frames,
+                                    uint8_t window_results, int located)
+{
+    /* The count goes last: a reader that sees it change re-reads the word (each wake word has a new count) */
+    wake_timing_word = (uint32_t)newest_age_frames | ((uint32_t)window_results << 16) |
+                       ((uint32_t)(located ? 1 : 0) << 24) | (1u << 25);
+    wake_timing_count = wake_count;
+}
+
+int audio_ctrl_get_wake_timing(uint16_t *wake_count, uint16_t *newest_age_frames,
+                               uint8_t *window_results, int *located)
+{
+    uint32_t count;
+    uint32_t w;
+    do {
+        count = wake_timing_count;
+        w = wake_timing_word;
+    } while (count != wake_timing_count);
+    *wake_count = (uint16_t)count;
+    *newest_age_frames = (uint16_t)(w & 0xFFFF);
+    *window_results = (uint8_t)((w >> 16) & 0xFF);
+    *located = (int)((w >> 24) & 1);
+    return (int)((w >> 25) & 1);
 }
 
 doa_result_t audio_ctrl_get_doa(void)
