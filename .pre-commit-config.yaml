@@ -1,0 +1,32 @@
+# Same hooks and versions as Satellite1-ESPHome's .pre-commit-config.yaml, limited
+# to the file types this repo has. CI (.github/workflows/lint.yaml) runs exactly these.
+# Submodules under modules/ and xmos_cmake_toolchain/ are third-party and not linted.
+repos:
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.38.0
+    hooks:
+      - id: yamllint
+        files: ^\.github/.*\.(yml|yaml)$
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.3
+    hooks:
+      - id: ruff
+        name: ruff (check)
+      - id: ruff-format
+        name: ruff (format check)
+        args: ["--check"]
+
+  # Stands in for Satellite1-ESPHome's clang-tidy hook: clang-tidy can't parse the
+  # xcore target, cppcheck can with the compile flags from a CMake configure. Needs
+  # the XTC tools and cppcheck locally, so it's opt-in here and enforced in CI:
+  # pre-commit run --hook-stage manual cppcheck
+  - repo: local
+    hooks:
+      - id: cppcheck
+        name: cppcheck [firmware]
+        entry: tools/lint/run_cppcheck.sh
+        language: system
+        files: \.(c|h)$|CMakeLists\.txt$|\.cmake$
+        pass_filenames: false
+        stages: [manual]

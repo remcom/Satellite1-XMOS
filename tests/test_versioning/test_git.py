@@ -1,10 +1,10 @@
-import pytest
-import subprocess
 import argparse
+import subprocess
+from unittest.mock import MagicMock, patch
 
-from unittest.mock import patch, MagicMock
-from versioning import GitInfo, assert_clean_workspace, track_dev_build
+import pytest
 import versioning
+from versioning import GitInfo, assert_clean_workspace, track_dev_build
 
 
 # ✅ Mock subprocess output for Git commands
@@ -15,7 +15,7 @@ def test_git_info(mock_subproc):
     # Create a mock return object with `.stdout.strip()`
     def mock_git_command(args, cwd, capture_output, text, check):
         mock = MagicMock()
-        
+
         # Simulated outputs for each Git command
         if args == ["git", "rev-parse", "--abbrev-ref", "HEAD"]:
             mock.stdout = "main\n"
@@ -41,6 +41,7 @@ def test_git_info(mock_subproc):
     assert git_info.last_tag == "v1.2.3"
     assert git_info.patch_str == "patch content"
     assert git_info.dirty is False
+
 
 # ✅ Mock case where no Git tags exist
 @patch("subprocess.run")

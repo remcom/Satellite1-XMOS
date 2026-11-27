@@ -1,0 +1,61 @@
+name: Lint
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+# A newer push to the same branch/PR supersedes the run in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Runs exactly the hooks in .pre-commit-config.yaml so CI and local commits can't drift.
+  pre-commit:
+    name: pre-commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Run pre-commit
+        uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+
+  cppcheck:
+    name: cppcheck (firmware)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      XCORE_BUILDER: "ghcr.io/xmos/xcore_builder:v3.1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive
+
+      # The compile database needs xcc and xmos-ai-tools, which the builder image has.
+      # Same mount path as the host so the paths in compile_commands.json resolve there.
+      - name: Generate compile_commands.json
+        run: |
+          docker pull "${XCORE_BUILDER}"
+          docker run --rm -u "$(id -u):$(id -g)" \
+            -w "${GITHUB_WORKSPACE}" -v "${GITHUB_WORKSPACE}:${GITHUB_WORKSPACE}" \
+            "${XCORE_BUILDER}" bash -lc '
+              source tools/ci/helper_functions.sh &&
+              export_ci_build_vars &&
+              setup_python_env "${PWD}" &&
+              tools/lint/run_cppcheck.sh --configure-only'
+
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends cppcheck
+
+      - name: Run cppcheck
+        run: tools/lint/run_cppcheck.sh --skip-configure

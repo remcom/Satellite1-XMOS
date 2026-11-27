@@ -991,7 +991,7 @@ static void test_vnr_hold(void)
 static void test_audio_ctrl(void)
 {
     audio_ctrl_init(20, MIC_MODE_BEAM);
-    CHECK(audio_ctrl_get_ch1_tap() == CH1_TAP_NS, "default tap %u", audio_ctrl_get_ch1_tap());
+    CHECK(audio_ctrl_get_ch1_tap() == CH1_TAP_NS, "default tap %u", (unsigned) audio_ctrl_get_ch1_tap());
     CHECK(audio_ctrl_get_ic_fast_hold() == 1 && audio_ctrl_get_hpf() == 1, "fast hold and HPF default on");
     CHECK(audio_ctrl_get_steer_policy() == STEER_POLICY_FOLLOW_SPEECH, "default policy");
 

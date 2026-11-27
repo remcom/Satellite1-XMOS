@@ -152,6 +152,8 @@ void speaker_pipeline_output(void *output_app_data,
      * the mic pipeline: if the AEC falls behind, the oldest reference is
      * dropped instead of stalling the DAC.
      */
+    /* Every branch above fills ref.samples; frame_count is asserted */
+    // cppcheck-suppress uninitvar
     if (rtos_osal_queue_send(ref_input_queue, &ref, 0) != RTOS_OSAL_SUCCESS) {
         static ref_frame_t stale;
         (void) rtos_osal_queue_receive(ref_input_queue, &stale, 0);
