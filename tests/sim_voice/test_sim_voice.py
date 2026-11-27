@@ -10,8 +10,8 @@ import pytest
 from tests.conftest import PROJ_ROOT, SAT1_FIRMWARE_SRC
 
 HERE = Path(__file__).resolve().parent
-XMATH = PROJ_ROOT / "modules" / "core" / "modules" / "xcore_math" / "lib_xcore_math" / "lib_xcore_math"
-VOICE = PROJ_ROOT / "modules" / "voice" / "modules"
+XMATH = PROJ_ROOT / "modules" / "lib_xcore_math" / "lib_xcore_math"
+VOICE = PROJ_ROOT / "modules" / "voice" / "lib_voice"
 
 
 @pytest.mark.skipif(shutil.which("cc") is None, reason="a host C compiler is required")

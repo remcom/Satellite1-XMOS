@@ -128,7 +128,7 @@ export XMOS_TOOL_PATH=${0:A:h};
 
 ### Setup Python Virtual Environment
 The `xmos-ai-tools` python package is required for building the firmware modules.
-The build generates the VNR model source (`modules/voice/modules/lib_vnr/src/inference/model/trained_model_xcore.tflite.*`) with the `xcore-opt` of this package. When the installed `xmos-ai-tools` version changes, CMake deletes those generated files on the next configure so they are rebuilt with the new version (`modules/CMakeLists.txt`).
+The build generates the VNR model source (`<build dir>/modules/voice/lib_voice/src.autogen/vnr_model/trained_model_xcore.tflite.*`) with the `xcore-opt` of this package, and links lib_voice's VNR against the package's TFLite Micro runtime. lib_voice's AEC schedule generator (run at configure time) needs the `numpy` it installs as well. When the installed `xmos-ai-tools` version changes, CMake deletes those generated files on the next configure so they are rebuilt with the new version (`modules/CMakeLists.txt`).
 It is recommended to install it into a virtual environment on Python 3.12 (CI uses the same version; newer Pythons don't work because `xmos-ai-tools` needs `numpy<2.0`, which has no wheels past 3.12):
 
 ```bash

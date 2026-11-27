@@ -15,10 +15,10 @@
 
 /* Library headers */
 #include "generic_pipeline.h"
-#include "aec_api.h"
-#include "agc_api.h"
-#include "ic_api.h"
-#include "ns_api.h"
+#include "aec.h"
+#include "agc.h"
+#include "ic.h"
+#include "ns.h"
 #include "vnr_features_api.h"
 #include "vnr_inference_api.h"
 
@@ -34,8 +34,6 @@
 #if appconfAUDIO_PIPELINE_FRAME_ADVANCE != 240
 #error This pipeline is only configured for 240 frame advance
 #endif
-
-#define VNR_AGC_THRESHOLD (0.5)
 
 #if ON_TILE(0)
 static ic_stage_ctx_t DWORD_ALIGNED ic_stage_state = {};
@@ -94,30 +92,22 @@ static int audio_pipeline_output_i(frame_data_t *frame_data,
     return AUDIO_PIPELINE_DONT_FREE_FRAME;
 }
 
+#if !appconfAUDIO_PIPELINE_SKIP_IC_AND_VNR
 /*
- * ic_calc_vnr_pred(), which also returns this frame's unsmoothed VNR of the IC
- * input for the fast attack hold. Same inference calls, so no extra cost.
+ * The VNR of the IC output, smoothed as the IC smooths that of its input.
+ * fwk_voice's ic_calc_vnr_pred() computed it for the AGC; lib_voice's only
+ * does the input.
  */
-static float_s32_t calc_vnr_pred(ic_state_t *ic, vnr_pred_state_t *pred)
+static void calc_output_vnr_pred(const ic_state_t *ic, vnr_pred_stage_ctx_t *pred)
 {
     bfp_s32_t feature_patch;
     int32_t feature_patch_data[VNR_PATCH_WIDTH * VNR_MEL_FILTERS];
-    vnr_pred_state_t *ic_pred = &ic->vnr_pred_state;
-
-    float_s32_t input_vnr;
-    vnr_extract_features(&ic_pred->feature_state[0], &feature_patch, feature_patch_data, &ic->Y_bfp[0]);
-    vnr_inference(&input_vnr, &feature_patch);
-    ic_pred->input_vnr_pred = float_s32_ema(ic_pred->input_vnr_pred, input_vnr, ic_pred->pred_alpha_q30);
-
     float_s32_t output_vnr;
-    vnr_extract_features(&ic_pred->feature_state[1], &feature_patch, feature_patch_data, &ic->Error_bfp[0]);
+    vnr_extract_features(&pred->output_feature_state, &feature_patch, feature_patch_data, &ic->Error_bfp[0]);
     vnr_inference(&output_vnr, &feature_patch);
-    ic_pred->output_vnr_pred = float_s32_ema(ic_pred->output_vnr_pred, output_vnr, ic_pred->pred_alpha_q30);
-
-    pred->input_vnr_pred = ic_pred->input_vnr_pred;
-    pred->output_vnr_pred = ic_pred->output_vnr_pred;
-    return input_vnr;
+    pred->output_vnr_pred = float_s32_ema(pred->output_vnr_pred, output_vnr, ic->vnr_pred_state.pred_alpha_q30);
 }
+#endif
 
 static void stage_vnr_and_ic(frame_data_t *frame_data)
 {
@@ -138,23 +128,26 @@ static void stage_vnr_and_ic(frame_data_t *frame_data)
               frame_data->samples[1],
               frame_data->samples[0]);
 
-    vnr_pred_state_t *vnr_pred_state = &vnr_pred_stage_state.vnr_pred_state;
-    const float_s32_t input_vnr = calc_vnr_pred(&ic_stage_state.state, vnr_pred_state);
-
-    float_s32_t agc_vnr_threshold = f32_to_float_s32(VNR_AGC_THRESHOLD);
-    frame_data->vnr_pred_flag = float_s32_gt(vnr_pred_stage_state.vnr_pred_state.output_vnr_pred, agc_vnr_threshold);
+    /* Updates the smoothed input VNR in the IC state, returns this frame's unsmoothed one */
+    float_s32_t input_vnr;
+    ic_calc_vnr_pred(&ic_stage_state.state, &input_vnr);
+    calc_output_vnr_pred(&ic_stage_state.state, &vnr_pred_stage_state);
+    frame_data->vnr_pred = vnr_pred_stage_state.output_vnr_pred;
 
     /* Tracked either way, so switching the fast hold on starts from the current estimate */
-    const float hold_vnr = vnr_hold_update(&vnr_hold, float_s32_to_float(input_vnr));
-    float_s32_t adapt_vnr = vnr_pred_state->input_vnr_pred;
+    const float hold_vnr = vnr_hold_update(&vnr_hold, float_s32_to_f32(input_vnr));
+    float_s32_t *ic_vnr = &ic_stage_state.state.vnr_pred_state.input_vnr_pred;
+    const float_s32_t smoothed_vnr = *ic_vnr;
     if (AUDIO_CTRL_T0_IC_FAST_HOLD(frame_data->t0_ctrl)) {
         const float_s32_t threshold_high =
             ic_stage_state.state.ic_adaption_controller_state.adaption_controller_config.input_vnr_threshold_high;
-        adapt_vnr = f32_to_float_s32(vnr_hold_adapt_vnr(hold_vnr,
-                                                        float_s32_to_float(adapt_vnr),
-                                                        float_s32_to_float(threshold_high)));
+        /* ic_adapt() reads the VNR from the state: adapt on the held one, keep smoothing the real one */
+        *ic_vnr = f32_to_float_s32(vnr_hold_adapt_vnr(hold_vnr,
+                                                      float_s32_to_f32(smoothed_vnr),
+                                                      float_s32_to_f32(threshold_high)));
     }
-    ic_adapt(&ic_stage_state.state, adapt_vnr);
+    ic_adapt(&ic_stage_state.state);
+    *ic_vnr = smoothed_vnr;
 
     /* Intentionally ignoring comms ch from here on out */
 #if appconfAUDIO_PIPELINE_STORE_IC_AUDIO    
@@ -191,9 +184,10 @@ static void stage_agc(frame_data_t *frame_data)
 #else
     configASSERT(AGC_FRAME_ADVANCE == appconfAUDIO_PIPELINE_FRAME_ADVANCE);
 
-    agc_stage_state.md.vnr_flag = frame_data->vnr_pred_flag;
+    agc_stage_state.md.vnr_flag = frame_data->vnr_pred;
     agc_stage_state.md.aec_ref_power = frame_data->max_ref_energy;
     agc_stage_state.md.aec_corr_factor = frame_data->aec_corr_factor;
+    agc_stage_state.md.ref_active_flag = frame_data->ref_active_flag;
 
     /* agc_api.h: input and output may be the same buffer */
     agc_process_frame(
@@ -210,13 +204,14 @@ static void initialize_pipeline_stages(void)
     frame_pool_init(&frame_pool, sizeof(frame_data_t), AP_T0_FRAME_COUNT);
 
     ic_init(&ic_stage_state.state);
-    vnr_hold_init(&vnr_hold, float_s32_to_float(ic_stage_state.state.vnr_pred_state.input_vnr_pred));
+    vnr_hold_init(&vnr_hold, float_s32_to_f32(ic_stage_state.state.vnr_pred_state.input_vnr_pred));
+    vnr_feature_state_init(&vnr_pred_stage_state.output_feature_state);
+    vnr_pred_stage_state.output_vnr_pred = f32_to_float_s32(IC_INIT_INPUT_VNR_PRED);
 
     ns_init(&ns_stage_state.state);
 
     agc_init(&agc_stage_state.state, &AGC_PROFILE_ASR);
-    agc_stage_state.md.aec_ref_power = AGC_META_DATA_NO_AEC;
-    agc_stage_state.md.aec_corr_factor = AGC_META_DATA_NO_AEC;
+    agc_stage_state.md = agc_meta_data_init();
 }
 
 void audio_pipeline_init(

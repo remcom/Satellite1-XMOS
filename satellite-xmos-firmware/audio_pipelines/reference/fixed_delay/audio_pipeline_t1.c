@@ -108,7 +108,8 @@ static void *audio_pipeline_input_i(void *input_app_data)
 {
     frame_data_t *frame_data = frame_pool_get(&frame_pool);
     /* The samples and the reference are overwritten below and by the front end */
-    frame_data->vnr_pred_flag = 0;
+    frame_data->vnr_pred = AGC_META_DATA_NO_VNR;
+    frame_data->ref_active_flag = AGC_META_DATA_NO_REF;
     frame_data->aec_corr_factor = (float_s32_t){0, 0};
     frame_data->t0_ctrl = audio_ctrl_get_t0_word();
     memset(&frame_data->quality, 0, sizeof(frame_data->quality));
@@ -334,8 +335,9 @@ static void stage_aec(frame_data_t *frame_data)
     const uint32_t start = stage_stats_start();
 #if !appconfAUDIO_PIPELINE_SKIP_AEC
     /*
-     * In place: aec_frame_init() copies the mics into the AEC state before any
-     * output is written. max_ref_energy was set by stage 0 (playback_active()).
+     * In place: aec_process_frame() copies the mics into the AEC state (in
+     * aec_frame_init()) before any output is written. max_ref_energy was set
+     * by stage 0 (playback_active()).
      */
 #if AP_AEC_ON_RAW_MICS
     /* aec4: on the four raw mics against the mono reference in channel 0 */
@@ -343,28 +345,28 @@ static void stage_aec(frame_data_t *frame_data)
 #else
     int32_t (*aec_io)[AEC_FRAME_ADVANCE] = frame_data->samples;
 #endif
-    aec_process_frame_1thread(
-            &aec_state.aec_main_state,
-            &aec_state.aec_shadow_state,
+    aec_process_frame(
+            &aec_state.state,
             aec_io,
             NULL,
-            (const int32_t (*)[AEC_FRAME_ADVANCE])aec_io,
-            frame_data->aec_reference_audio_samples);
+            aec_io,
+            frame_data->aec_reference_audio_samples,
+            &frame_data->ref_active_flag);
 
-    /* Already smoothed by lib_aec; conversion to dB happens in the reader. */
+    /* Already smoothed by the AEC; conversion to dB happens in the reader. */
     frame_data->quality.aec_channels = AEC_MAX_Y_CHANNELS;
     for (unsigned ch = 0; ch < AEC_MAX_Y_CHANNELS; ++ch) {
-        frame_data->quality.input_energy[ch] = aec_state.aec_shared_state.y_ema_energy[ch];
-        frame_data->quality.error_energy[ch] = aec_state.aec_main_state.error_ema_energy[ch];
+        frame_data->quality.input_energy[ch] = aec_state.state.shared_state.y_ema_energy[ch];
+        frame_data->quality.error_energy[ch] = aec_state.state.main_state.error_ema_energy[ch];
     }
 
 #if (appconfINPUT_SAMPLES_MIC_DELAY_MS < 0) && !appconfAUDIO_PIPELINE_SKIP_STATIC_DELAY
     /* stage_delay() delayed the reference after stage_frontend() measured it */
     frame_data->max_ref_energy = aec_calc_max_input_energy(
                                     frame_data->aec_reference_audio_samples,
-                                    aec_state.aec_main_state.shared_state->num_x_channels);
+                                    aec_state.state.shared_state.num_x_channels);
 #endif
-    frame_data->aec_corr_factor = aec_calc_corr_factor(&aec_state.aec_main_state, 0);
+    frame_data->aec_corr_factor = aec_calc_corr_factor(&aec_state.state.main_state, 0);
 #endif
 
 #if AP_AEC_ON_RAW_MICS
@@ -404,15 +406,12 @@ static void initialize_pipeline_stages(void)
     configASSERT(delay_buf_state.delay_buf);
 #endif
 
-    aec_init(&aec_state.aec_main_state,
-             &aec_state.aec_shadow_state,
-             &aec_state.aec_shared_state,
-             &aec_state.aec_main_memory_pool[0],
-             &aec_state.aec_shadow_memory_pool[0],
+    aec_init(&aec_state.state,
              AEC_MAX_Y_CHANNELS,
              AEC_MAX_X_CHANNELS,
              AEC_MAIN_FILTER_PHASES,
-             AEC_SHADOW_FILTER_PHASES);
+             AEC_SHADOW_FILTER_PHASES,
+             &tdist);
 }
 
 void audio_pipeline_init(

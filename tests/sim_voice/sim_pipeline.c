@@ -1,16 +1,16 @@
 /*
  * Host replica of the fixed_delay pipeline (audio_pipeline_t1.c, then
  * audio_pipeline_t0.c), calling the firmware's own front end, DOA, beamformer,
- * high-pass, VNR hold and echo gate code and the fwk_voice
+ * high-pass, VNR hold and echo gate code and the lib_voice
  * AEC, IC and NS. Not modelled: the AGC (channel 0 only, not part of the wake
  * word path), the 48 kHz resamplers and the I2S/SPI transport.
  */
 #include <string.h>
 
-#include "aec_api.h"
-#include "ic_api.h"
-#include "ns_api.h"
-#include "aec/aec_memory_pool.h"
+#include "aec.h"
+#include "aec_priv.h"
+#include "ic.h"
+#include "ns.h"
 
 #include "audio/doa.h"
 #include "audio/echo_gate.h"
@@ -20,22 +20,15 @@
 
 #include "sim_pipeline.h"
 
-void aec_process_frame_1thread(aec_state_t *main_state, aec_state_t *shadow_state,
-                               int32_t (*output_main)[AEC_FRAME_ADVANCE],
-                               int32_t (*output_shadow)[AEC_FRAME_ADVANCE],
-                               const int32_t (*y_data)[AEC_FRAME_ADVANCE],
-                               const int32_t (*x_data)[AEC_FRAME_ADVANCE]);
+/* The AEC task schedule build.sh generated */
+extern aec_task_distribution_t tdist;
 
 #define PLAYBACK_ENERGY_THRESHOLD 1e-7f
 #define IC_VNR_ALPHA 0.97f
 
 static sim_cfg_t cfg;
 
-static aec_state_t aec_main;
-static aec_state_t aec_shadow;
-static aec_shared_state_t aec_shared;
-static uint8_t __attribute__((aligned(8))) aec_main_pool[sizeof(aec_memory_pool_t)];
-static uint8_t __attribute__((aligned(8))) aec_shadow_pool[sizeof(aec_shadow_filt_memory_pool_t)];
+static aec_state_t aec;
 
 static ic_state_t ic;
 static ns_state_t ns;
@@ -51,22 +44,15 @@ static uint32_t steer_seen;     /* beam azimuth << 8 | ch0 mic mask of the previ
 /*
  * Experiment (not in the firmware, see docs/voice-simulation.md): clear the IC
  * filter whenever the front end changes what feeds the two channels, as
- * lib_ic's own ic_reset_filter() does on instability.
+ * the IC's own ic_reset_filter() does on instability.
  */
 static void ic_clear_filter(ic_state_t *state)
 {
-    for (unsigned ph = 0; ph < IC_X_CHANNELS * IC_FILTER_PHASES; ph++) {
-        bfp_complex_s32_t *h = &state->H_hat_bfp[0][ph];
-        memset(h->data, 0, h->length * sizeof(complex_s32_t));
-        h->exp = AEC_ZEROVAL_EXP;
-        h->hr = AEC_ZEROVAL_HR;
-    }
-    memset(state->sigma_XX[0], 0, sizeof(state->sigma_XX[0]));
-    state->sigma_XX_bfp[0].exp = AEC_ZEROVAL_EXP;
-    state->sigma_XX_bfp[0].hr = AEC_ZEROVAL_HR;
+    aec_priv_reset_filter(state->h_hat_bfp[0], IC_X_CHANNELS, IC_FILTER_PHASES);
+    bfp_s32_set(&state->sigma_XX_bfp[0], 0, AEC_ZEROVAL_EXP);
 }
 
-/* lib_ic needs the VNR model only for ic_calc_vnr_pred(), which is not used: the VNR is an oracle */
+/* The IC needs the VNR model only for ic_calc_vnr_pred(), which is not used: the VNR is an oracle */
 void vnr_feature_state_init(vnr_feature_state_t *s) { (void)s; }
 int32_t vnr_inference_init(void) { return 0; }
 void vnr_extract_features(vnr_feature_state_t *s, bfp_s32_t *p, int32_t *d, const bfp_complex_s32_t *x)
@@ -81,11 +67,8 @@ static unsigned aec_refs(void) { return cfg.aec4 ? 1 : (unsigned)cfg.aec_ref_cha
 void sim_pipeline_init(const sim_cfg_t *c)
 {
     cfg = *c;
-    memset(&aec_main, 0, sizeof(aec_main));
-    memset(&aec_shadow, 0, sizeof(aec_shadow));
-    memset(&aec_shared, 0, sizeof(aec_shared));
-    aec_init(&aec_main, &aec_shadow, &aec_shared, aec_main_pool, aec_shadow_pool,
-             aec_mics(), aec_refs(), 10, 5);
+    memset(&aec, 0, sizeof(aec));
+    aec_init(&aec, aec_mics(), aec_refs(), 10, 5, &tdist);
     ic_init(&ic);
     ns_init(&ns);
     doa_init(&doa);
@@ -153,9 +136,7 @@ void sim_pipeline_frame(const int32_t raw_in[4][SIM_FRAME],
             mic_hpf_process(&hpf_lo, &samples[0][0], SIM_FRAME);
         }
         out->aec_in_energy = audio_mean_square_s32(&samples[0][0], 2 * SIM_FRAME);
-        aec_process_frame_1thread(&aec_main, &aec_shadow, samples, NULL,
-                                  (const int32_t (*)[AEC_FRAME_ADVANCE])samples,
-                                  (const int32_t (*)[AEC_FRAME_ADVANCE])ref);
+        aec_process_frame(&aec, samples, NULL, samples, ref, NULL);
         out->aec_out_energy = audio_mean_square_s32(&samples[0][0], 2 * SIM_FRAME);
     } else {
         /* stage_capture(), stage_aec(), stage_frontend_after_aec() */
@@ -168,9 +149,7 @@ void sim_pipeline_frame(const int32_t raw_in[4][SIM_FRAME],
             mic_hpf_process(&hpf_hi, &mics[2][0], SIM_FRAME);
         }
         out->aec_in_energy = audio_mean_square_s32(&mics[0][0], 4 * SIM_FRAME);
-        aec_process_frame_1thread(&aec_main, &aec_shadow, mics, NULL,
-                                  (const int32_t (*)[AEC_FRAME_ADVANCE])mics,
-                                  (const int32_t (*)[AEC_FRAME_ADVANCE])ref);
+        aec_process_frame(&aec, mics, NULL, mics, ref, NULL);
         out->aec_out_energy = audio_mean_square_s32(&mics[0][0], 4 * SIM_FRAME);
         if (cfg.doa_post_aec) {
             const int echo = echo_gate_update(&gate, playback, out->aec_in_energy, out->aec_out_energy);
@@ -204,7 +183,9 @@ void sim_pipeline_frame(const int32_t raw_in[4][SIM_FRAME],
     if (cfg.ic_fast_hold) {
         adapt = vnr_hold_adapt_vnr(hold, vnr_ema, (float)IC_INIT_INPUT_VNR_THRESHOLD_HIGH);
     }
-    ic_adapt(&ic, f32_to_float_s32(adapt));
+    /* ic_adapt() reads the VNR from the state, as audio_pipeline_t0.c sets it */
+    ic.vnr_pred_state.input_vnr_pred = f32_to_float_s32(adapt);
+    ic_adapt(&ic);
     if (cfg.ch1_tap == 1) {
         memcpy(out->ch1, samples[0], sizeof(out->ch1));
     }

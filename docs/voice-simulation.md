@@ -9,7 +9,7 @@ follow.
 ## What is simulated
 
 - **The DSP is the firmware's own code**, compiled for the host: the
-  fwk_voice AEC, IC and NS, lib_xcore_math's portable C kernels, and the
+  lib_voice AEC, IC and NS, lib_xcore_math's portable C kernels, and the
   firmware's DOA, mic front end, beamformer, high-pass, VNR hold and echo
   gate (`satellite-xmos-firmware/src/audio`). `sim_pipeline.c` calls them in
   the order `audio_pipeline_t1.c` and `audio_pipeline_t0.c` do.
@@ -86,6 +86,37 @@ beam modes.
 |---|---|---|
 | fixed_delay | 500,460 / 424,668 | 407,588 / 424,668 |
 | aec4 | 508,108 / 424,668 | 508,340 / 424,668 |
+
+## lib_voice 2.0.0 against fwk_voice 0.8.0
+
+The move from fwk_voice 0.8.0 to lib_voice 2.0.0 (with lib_xcore_math 3.0.1
+and xmos-ai-tools 1.4.5), every scenario run with both. The firmware keeps
+the fwk_voice behaviour where lib_voice changed an interface: the AGC still
+gets the smoothed VNR of the IC output, and the IC fast hold still feeds
+`ic_adapt()`.
+
+| | fwk_voice 0.8.0 | lib_voice 2.0.0 |
+|---|---|---|
+| ERLE 2x1, mean of 3 seeds (worst 10%) | 29.6 (27.2) dB | 29.2 (26.4) dB |
+| ERLE aec4 4x1 (worst 10%) | 29.5 (27.3) dB | 29.3 (26.8) dB |
+| ch1 SNR, double talk, 2x1 | 14.5 dB | 13.8 dB |
+| ERLE 2x2 (not used) | 14.7 dB | 12.5 dB |
+| aec4 post-AEC DOA, 8 music scenes: beam error after a wake word | 17.7 deg | 24.7 deg (one scene +49, the others -2..+4) |
+| aec4 post-AEC DOA: ch1 wake word / command SNR | 15.9 / 16.4 dB | 15.4 / 15.9 dB (that scene -6.9 / -4.8) |
+| Command SNR after a re-steer during playback, 2x1 / aec4 | 15.6 / 18.0 dB | 15.8 / 18.7 dB |
+| ERLE with a reference that does not match the speaker (`ref_mix` downmix), 2x1 | 8.3 dB | 7.3 dB |
+| IC, NS, mic modes, taps | | within 0.1 dB |
+
+The AEC loses a few tenths of a dB on average and up to 1.4 dB in its worst
+frames. A likely cause, not confirmed, is that lib_voice 2.0.0 stores the
+adaptive filter as 16-bit time-domain taps. The DOA result rests on one
+scene and needs checking on hardware, as does all of this.
+
+| Variant, tile 0 / tile 1 bytes (XTC 15.3.1) | fwk_voice 0.8.0 | lib_voice 2.0.0 |
+|---|---|---|
+| fixed_delay | 424,668 / 407,588 | 397,676 / 368,052 |
+| bypass | 382,876 / 384,252 | 355,372 / 334,700 |
+| aec4 | 424,668 / 508,340 | 397,676 / 421,996 |
 
 ## Results
 ### Mono AEC reference: stereo music, mono speaker

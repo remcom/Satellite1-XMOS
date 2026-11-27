@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Builds the voice pipeline simulator for the host: the firmware's audio code,
-# fwk_voice lib_aec/lib_ic/lib_ns and lib_xcore_math's portable C kernels.
-# lib_aec is built with room for 4 mics and 2 references (as
-# audio_pipelines/reference/CMakeLists.txt does for aec4), so one binary runs
-# every AEC configuration.
+# lib_voice's AEC, IC and NS and lib_xcore_math's portable C kernels.
+# The AEC is built with room for 4 mics and 2 references (an aec_conf.h and
+# task schedule from lib_voice's generator, as generate_schedule() in
+# satellite1.cmake makes for each firmware target), so one binary runs every
+# AEC configuration.
 #
 # usage: tests/sim_voice/build.sh <out dir>
 set -euo pipefail
@@ -11,25 +12,31 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 OUT="${1:?out dir}"
-mkdir -p "$OUT/obj" "$OUT/aec_api"
+mkdir -p "$OUT/obj" "$OUT/aec_conf"
 CC="${CC:-cc}"
+# The AEC schedule generator needs numpy, which xmos-ai-tools brings (requirements.txt)
+if [[ -z "${PYTHON:-}" ]]; then
+  PYTHON=python3
+  [[ -x "$ROOT/.venv/bin/python" ]] && PYTHON="$ROOT/.venv/bin/python"
+fi
 
-XMATH="$ROOT/modules/core/modules/xcore_math/lib_xcore_math/lib_xcore_math"
-VOICE="$ROOT/modules/voice/modules"
+XMATH="$ROOT/modules/lib_xcore_math/lib_xcore_math"
+VOICE="$ROOT/modules/voice/lib_voice"
 FW="$ROOT/satellite-xmos-firmware"
 
-cp "$VOICE"/lib_aec/api/*.h "$OUT/aec_api/"
-sed -i.bak -e 's/#define AEC_LIB_MAX_Y_CHANNELS (2)/#define AEC_LIB_MAX_Y_CHANNELS (4)/' "$OUT/aec_api/aec_defines.h"
-grep -q "AEC_LIB_MAX_Y_CHANNELS (4)" "$OUT/aec_api/aec_defines.h"
+# <threads> <mics> <references> <main phases> <shadow phases>
+"$PYTHON" -I "$ROOT/modules/voice/tests/shared/python/generate_task_distribution_scheme.py" \
+  --config "1 4 2 10 5" --out-dir "$OUT/aec_conf" > /dev/null
 
 INC=(
   -I"$HERE"
-  -I"$OUT/aec_api"
+  -I"$OUT/aec_conf"
   -I"$XMATH/api"
-  -I"$VOICE/lib_aec/src"
-  -I"$VOICE/lib_ic/api" -I"$VOICE/lib_ic/src"
-  -I"$VOICE/lib_ns/api" -I"$VOICE/lib_ns/src"
-  -I"$VOICE/lib_vnr/api/common" -I"$VOICE/lib_vnr/api/features" -I"$VOICE/lib_vnr/api/inference"
+  -I"$VOICE/api"
+  -I"$VOICE/api/aec" -I"$VOICE/src/aec"
+  -I"$VOICE/api/ic" -I"$VOICE/src/ic"
+  -I"$VOICE/api/ns" -I"$VOICE/src/ns"
+  -I"$VOICE/api/vnr"
   -I"$FW/src"
   -I"$FW/audio_pipelines/reference/fixed_delay"
 )
@@ -40,7 +47,7 @@ compile() {
   local obj="$OUT/obj/$(echo "$src" | sed "s|$ROOT/||; s|/|_|g").o"
   if [[ ! -f "$obj" || "$src" -nt "$obj" || "$HERE/build.sh" -nt "$obj" ]]; then
     # shellcheck disable=SC2086
-    "$CC" -std=gnu99 -O2 $flags "${INC[@]}" -c "$src" -o "$obj"
+    "$CC" -std=gnu99 -O2 -D__aec_conf_h_exists__ $flags "${INC[@]}" -c "$src" -o "$obj"
   fi
   objs+=("$obj")
 }
@@ -50,10 +57,9 @@ for d in vect bfp dct fft filter scalar arch/ref etc/xmath_fft_lut; do
     compile "$f" "-w -I$XMATH/src/vect -I$XMATH/src/etc/xmath_fft_lut"
   done < <(find "$XMATH/src/$d" -name '*.c' | sort)
 done
-for f in "$VOICE"/lib_aec/src/*.c "$VOICE"/lib_ic/src/*.c "$VOICE"/lib_ns/src/*.c; do
+for f in "$VOICE"/src/aec/*.c "$VOICE"/src/ic/*.c "$VOICE"/src/ns/*.c "$OUT/aec_conf/aec_task_distribution.c"; do
   compile "$f" "-w"
 done
-compile "$FW/audio_pipelines/reference/fixed_delay/aec/aec_process_frame_1thread.c" "-w"
 for f in doa mic_frontend beamformer vnr_hold echo_gate; do
   compile "$FW/src/audio/$f.c" "-Wall -Wextra -Werror"
 done

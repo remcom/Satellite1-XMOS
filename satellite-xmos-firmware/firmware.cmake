@@ -50,15 +50,16 @@ set_source_files_properties(
 option(SATELLITE1_VOICE_LIBS_O2 "Build the IC/NS/AGC/VNR libraries with -O2" ON)
 if(SATELLITE1_VOICE_LIBS_O2)
     foreach(VOICE_LIB
-            fwk_voice_module_lib_ic
-            satellite1_lib_ic_aec4
-            fwk_voice_module_lib_ns
-            fwk_voice_module_lib_agc
-            fwk_voice_module_lib_vnr_features
-            fwk_voice_module_lib_vnr_inference)
+            lib_voice_module_lib_ns
+            lib_voice_module_lib_agc
+            lib_voice_module_lib_vnr)
         # Appended after the library's own -Os, so -O2 wins
         target_compile_options(${VOICE_LIB} PRIVATE -O2)
     endforeach()
+    # The IC is an INTERFACE library, built as part of the tile targets of this
+    # directory; source options come after the target's and the library's -Os
+    get_target_property(VOICE_IC_SOURCES lib_voice_module_lib_ic INTERFACE_SOURCES)
+    set_source_files_properties(${VOICE_IC_SOURCES} PROPERTIES COMPILE_OPTIONS "-O2")
 endif()
 
 set(APP_LINK_OPTIONS

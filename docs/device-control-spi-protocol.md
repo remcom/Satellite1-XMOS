@@ -360,10 +360,10 @@ Read responses start with the command status byte, like the other servicers:
   and `1` or `2` in a build that skips the IC (or does not store its output,
   for `1`), are rejected with `SERVICER_WRONG_PAYLOAD`.
 - `IC_FAST_HOLD`: `1` (default) stops the interference canceller adapting
-  within one or two frames of speech onset. `0` keeps the fwk_voice timing,
+  within one or two frames of speech onset. `0` keeps the lib_voice timing,
   which adapts for the first ~350-450 ms of an utterance and so partly cancels
   the talker when the noise reference also hears them (mic pairs, or a beam
-  pointing elsewhere). The filter leakage during speech keeps the fwk_voice
+  pointing elsewhere). The filter leakage during speech keeps the lib_voice
   timing either way.
 - `HPF`: `1` (default) high-passes both pipeline channels at 100 Hz before the
   AEC (all four raw mics before the AEC in `aec4`), `0` turns it off. Re-enabling
@@ -471,7 +471,7 @@ slots are unavailable, and all counters are zero. If processing stalls, the
 last complete snapshot remains readable; an unchanged sequence can indicate
 staleness. The sequence wraps and does not identify a firmware boot.
 
-ERLE is `10 * log10(y_ema_energy[ch] / error_ema_energy[ch])`, using lib_aec's
+ERLE is `10 * log10(y_ema_energy[ch] / error_ema_energy[ch])`, using the lib_voice AEC's
 existing time-domain energy estimates for the main filter, before downstream
 mic gain, IC, NS and AGC. The pinned library uses an EMA retention factor of
 0.98 per 240-sample/15 ms frame (about 0.74 s time constant); there is no second
