@@ -12,8 +12,8 @@
  */
 typedef enum {
     /* tile 1 */
-    STAGE_STATS_T1_FRONTEND = 0,    /* mic front end and DOA */
-    STAGE_STATS_T1_AEC,             /* AEC and mic gain */
+    STAGE_STATS_T1_FRONTEND = 0,    /* mic front end and DOA (aec4: high-pass only) */
+    STAGE_STATS_T1_AEC,             /* AEC and mic gain (aec4: also the DOA and mic front end) */
     STAGE_STATS_T1_SPK_SRC,         /* speaker reference, 48 to 16 kHz */
     /* tile 0 */
     STAGE_STATS_T0_IC_VNR,

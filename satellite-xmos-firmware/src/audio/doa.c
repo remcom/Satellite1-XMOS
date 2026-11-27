@@ -42,7 +42,16 @@ void doa_init(doa_state_t *state)
     }
     state->frames_since_speech = DOA_RESET_FRAMES;
     state->frames_since_result = DOA_HOLD_FRAMES;
+    state->playback_hangover_frames = DOA_PLAYBACK_HANGOVER_FRAMES;
     state->frames_since_playback = DOA_PLAYBACK_HANGOVER_FRAMES;
+}
+
+void doa_set_playback_hangover(doa_state_t *state, unsigned frames)
+{
+    state->playback_hangover_frames = frames;
+    if (state->frames_since_playback > frames) {
+        state->frames_since_playback = frames;
+    }
 }
 
 /* Normalised (PHAT) b * conj(a), whose correlation peaks at t_b - t_a. */
@@ -226,10 +235,10 @@ const doa_result_t *doa_process(doa_state_t *state,
 
     if (playback_active) {
         state->frames_since_playback = 0;
-    } else if (state->frames_since_playback < DOA_PLAYBACK_HANGOVER_FRAMES) {
+    } else if (state->frames_since_playback < state->playback_hangover_frames) {
         state->frames_since_playback++;
     }
-    const int echo = state->frames_since_playback < DOA_PLAYBACK_HANGOVER_FRAMES;
+    const int echo = state->frames_since_playback < state->playback_hangover_frames;
 
     state->result.updated = 0;
     if (speech && !echo) {

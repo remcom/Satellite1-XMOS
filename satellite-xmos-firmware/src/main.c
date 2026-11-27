@@ -88,6 +88,17 @@ void speaker_pipeline_input(void *input_app_data,
 #endif
 }
 
+#if ON_TILE(SPEAKER_PIPELINE_TILE_NO) && appconfAUDIO_PIPELINE_AEC_REF_CHANNELS == 1
+static inline int32_t ref_mono_sample(int32_t left, int32_t right, ref_mix_t mix)
+{
+    switch (mix) {
+    case REF_MIX_LEFT:  return left;
+    case REF_MIX_RIGHT: return right;
+    default:            return (left >> 1) + (right >> 1);
+    }
+}
+#endif
+
 void speaker_pipeline_output(void *output_app_data,
                         const int32_t *samples,
                         size_t frame_count)
@@ -116,17 +127,19 @@ void speaker_pipeline_output(void *output_app_data,
     // down sample reference signal to 16kHz if needed 
 #if appconfAUDIO_PIPELINE_AEC_REF_CHANNELS == 1
     /*
-     * Mono AEC reference: (L+R)/2, what the TAS2780 plays in its default
-     * "Mono (Left + Right)" mode. Both reference slots get it, so the playback
-     * energy the DOA gate measures is unchanged.
+     * Mono AEC reference: what the TAS2780 plays, (L+R)/2 in its default
+     * "Mono (Left + Right)" mode, or one channel (AUDIO_SERVICER_CMD_REF_MIX).
+     * Both reference slots get it, so the playback energy the DOA gate
+     * measures is unchanged.
      */
+    const ref_mix_t mix = audio_ctrl_get_ref_mix();
     if (appconfI2S_AUDIO_SAMPLE_RATE == 3*appconfAUDIO_PIPELINE_SAMPLE_RATE) {
         static voice_src_ds3_t src_state;
 
         for( int frame=0; frame < frame_count; frame +=3 ){
             int32_t in[3];
             for (int k = 0; k < 3; k++) {
-                in[k] = (tmp[frame+k][0][0] >> 1) + (tmp[frame+k][0][1] >> 1);
+                in[k] = ref_mono_sample(tmp[frame+k][0][0], tmp[frame+k][0][1], mix);
             }
             const int32_t mono = voice_src_ds3(&src_state, in);
             for (int ch = 0; ch < appconfAUDIO_PIPELINE_REF_CHANNELS; ch++) {
@@ -135,7 +148,7 @@ void speaker_pipeline_output(void *output_app_data,
         }
     } else {
         for (int i = 0; i < appconfAUDIO_PIPELINE_FRAME_ADVANCE; i++) {
-            const int32_t mono = (tmp[i][0][0] >> 1) + (tmp[i][0][1] >> 1);
+            const int32_t mono = ref_mono_sample(tmp[i][0][0], tmp[i][0][1], mix);
             for (int ch = 0; ch < appconfAUDIO_PIPELINE_REF_CHANNELS; ch++) {
                 ref.samples[i][ch] = mono;
             }
