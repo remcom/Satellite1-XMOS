@@ -25,6 +25,13 @@ typedef struct {
     int ch1_tap;            /* 0 NS, 1 IC, 2 AEC */
     unsigned mic_gain_db;
     int hpf;
+    /* Prototypes (simulator only), see docs/voice-simulation.md */
+    int beam_kind;          /* MIC_MODE_BEAM: 0 the firmware's delay-and-sum beams, 1 superdirective (sim_sdbeam.h) */
+    float sd_wng_db;        /* superdirective: white noise gain floor */
+    int doa_vnr_gate;       /* the DOA only takes frames the VNR rates as speech (vnr >= 0.5) */
+    int idle_select;        /* MIC_MODE_BEAM outside a conversation: steer at the fixed beam where speech just started;
+                               2: the wake word steers there too, instead of at the DOA wake word direction */
+    int mic_mismatch;       /* mics differ in gain (+-0.9 dB) and low frequency roll-off (50-100 Hz) */
 } sim_cfg_t;
 
 typedef struct {
@@ -39,6 +46,14 @@ typedef struct {
 } sim_out_t;
 
 void sim_pipeline_init(const sim_cfg_t *cfg);
+
+/**
+ * Replays a steering: from the next sim_pipeline_init(), MIC_MODE_BEAM points
+ * at beam[f] in frame f and AUTO_PAIR uses ch0_mic[f], whatever the DOA says.
+ * For the phase inversion run, which must steer as the run on the real mix did.
+ * NULL ends the replay.
+ */
+void sim_pipeline_set_replay(const uint16_t *beam, const uint8_t *ch0_mic, size_t frames);
 
 /**
  * \param raw        4 mics (N, S, E, W) x SIM_FRAME, Q31

@@ -12,6 +12,8 @@
 #include <string.h>
 
 #include "sim_pipeline.h"
+#include "sim_sdbeam.h"
+#include "sim_doa_exp.h"
 #include "sim_room.h"
 
 #define PI 3.14159265358979
@@ -501,7 +503,12 @@ typedef struct {
 
 static run_pair_t run_pair(const rendered_t *r, const sim_cfg_t *cfg)
 {
-    run_pair_t p = { run_pipeline_sign(r, cfg, 1), run_pipeline_sign(r, cfg, -1) };
+    run_pair_t p;
+    p.a = run_pipeline_sign(r, cfg, 1);
+    /* the inverted run steers as the real one did, or the separation would compare different beams */
+    sim_pipeline_set_replay(p.a.beam, p.a.ch0_mic, p.a.frames);
+    p.b = run_pipeline_sign(r, cfg, -1);
+    sim_pipeline_set_replay(NULL, NULL, 0);
     return p;
 }
 
@@ -1130,6 +1137,338 @@ static void scenario_smoke(void)
     free_rendered(&r);
 }
 
+/* ---------------------------------------------------------------- beam prototypes */
+
+/* Directivity of the superdirective prototype for some white noise gain floors (sim_sdbeam.h) */
+static void scenario_beam_pattern(void)
+{
+    static const float wng[] = { -10.0f, -6.0f, -3.0f, 0.0f };
+    static const float freq[] = { 250.0f, 500.0f, 1000.0f, 1500.0f, 2000.0f, 3000.0f, 4000.0f, 6000.0f };
+    for (int k = 0; k < 4; k++) {
+        static sdb_t sdb;
+        sdb_init(&sdb, wng[k], 30);
+        printf("{\"scenario\":\"beam_pattern\",\"wng_min_db\":%.0f,\"wng_lowest_db\":%.2f", wng[k], sdb.min_wng_db);
+        for (int f = 0; f < 8; f++) {
+            printf(",\"di_%.0f\":%.2f", freq[f], sdb_directivity_db(&sdb, freq[f]));
+        }
+        printf("}\n");
+    }
+}
+
+typedef struct {
+    const char *label;
+    mic_mode_t mode;
+    int beam_kind;
+    float wng_db;
+    int vnr_gate;
+    int idle_select;
+    int mismatch;
+} proto_cfg_t;
+
+static const proto_cfg_t proto_cfgs[] = {
+    { "pair_ew",      MIC_MODE_PAIR_EW, 0, 0.0f,   0, 0, 0 },
+    { "ds",           MIC_MODE_BEAM,    0, 0.0f,   0, 0, 0 },
+    { "sd10",         MIC_MODE_BEAM,    1, -10.0f, 0, 0, 0 },
+    { "sd6",          MIC_MODE_BEAM,    1, -6.0f,  0, 0, 0 },
+    { "sd3",          MIC_MODE_BEAM,    1, -3.0f,  0, 0, 0 },
+    { "sd6_gate",     MIC_MODE_BEAM,    1, -6.0f,  1, 0, 0 },
+    { "ds_sel",       MIC_MODE_BEAM,    0, 0.0f,   0, 1, 0 },
+    { "sd6_sel",      MIC_MODE_BEAM,    1, -6.0f,  0, 1, 0 },
+    { "sd6_sel_gate", MIC_MODE_BEAM,    1, -6.0f,  1, 1, 0 },
+    { "ds_selwake",   MIC_MODE_BEAM,    0, 0.0f,   0, 2, 0 },
+    { "sd6_selwake",  MIC_MODE_BEAM,    1, -6.0f,  0, 2, 0 },
+    { "sd10_selwake", MIC_MODE_BEAM,    1, -10.0f, 0, 2, 0 },
+    { "pair_ew_mm",   MIC_MODE_PAIR_EW, 0, 0.0f,   0, 0, 1 },
+    { "ds_mm",        MIC_MODE_BEAM,    0, 0.0f,   0, 0, 1 },
+    { "sd10_mm",      MIC_MODE_BEAM,    1, -10.0f, 0, 0, 1 },
+    { "sd6_mm",       MIC_MODE_BEAM,    1, -6.0f,  0, 0, 1 },
+    { "sd6_sel_mm",   MIC_MODE_BEAM,    1, -6.0f,  0, 1, 1 },
+    { "sd6_selwake_mm", MIC_MODE_BEAM,  1, -6.0f,  0, 2, 1 },
+};
+#define PROTO_CFGS ((int)(sizeof(proto_cfgs) / sizeof(proto_cfgs[0])))
+
+/* Mean beam error during wake word q (0..2) and during its two commands, degrees; -1 outside BEAM */
+static double beam_err(const rendered_t *r, const run_t *o, const scene_t *sc, int q, int commands)
+{
+    double e = 0.0;
+    int n = 0;
+    for (int u = 3 * q + (commands ? 1 : 0); u <= 3 * q + (commands ? 2 : 0); u++) {
+        for (size_t f = r->utt_start[u] / FRAME; f < (r->utt_start[u] + r->utt_len[u]) / FRAME && f < o->frames; f++) {
+            if (o->beam[f] == MIC_FRONTEND_NO_BEAM) {
+                return -1.0;
+            }
+            e += ang_err(o->beam[f], (unsigned)lrintf(sc->talker_az) % 360);
+            n++;
+        }
+    }
+    return n ? e / n : -1.0;
+}
+
+static void run_proto_scene(const char *name, const scene_t *sc)
+{
+    /* SIM_PROTO_CFG=<label> runs only that configuration, to spread a run over processes */
+    const char *only = getenv("SIM_PROTO_CFG");
+    rendered_t r = render_scene(sc);
+    for (int k = 0; k < PROTO_CFGS; k++) {
+        const proto_cfg_t *pc = &proto_cfgs[k];
+        if (only && strcmp(only, pc->label)) {
+            continue;
+        }
+        sim_cfg_t c = base_cfg();
+        c.aec_ref_channels = 1;
+        c.mode = pc->mode;
+        c.beam_kind = pc->beam_kind;
+        c.sd_wng_db = pc->wng_db;
+        c.doa_vnr_gate = pc->vnr_gate;
+        c.idle_select = pc->idle_select;
+        c.mic_mismatch = pc->mismatch;
+        run_pair_t p = run_pair(&r, &c);
+        double wk;
+        double cm;
+        request_snr(&r, &p, &wk, &cm);
+        /* the first wake word too: request_snr() leaves it out (the steering starts from nowhere) */
+        const double wk0 = snr_db(&p.a.ch1, &p.b.ch1, r.utt_start[0], r.utt_start[0] + r.utt_len[0]);
+        /* The phase inversion separation needs both runs to steer alike */
+        unsigned steer_diff = 0;
+        for (size_t f = 0; f < p.a.frames; f++) {
+            steer_diff += (p.a.beam[f] != p.b.beam[f]) || (p.a.ch0_mic[f] != p.b.ch0_mic[f]);
+        }
+        printf("{\"scenario\":\"%s\",\"seed\":%u,\"talker_az\":%.0f,\"cfg\":\"%s\","
+               "\"wake_snr\":%.2f,\"wake0_snr\":%.2f,\"cmd_snr\":%.2f,"
+               "\"wake_beam_err_deg\":[%.0f,%.0f,%.0f],\"cmd_beam_err_deg\":[%.0f,%.0f,%.0f],"
+               "\"steer_diff_frames\":%u}\n",
+               name, sc->seed, sc->talker_az, pc->label, wk, wk0, cm,
+               beam_err(&r, &p.a, sc, 0, 0), beam_err(&r, &p.a, sc, 1, 0), beam_err(&r, &p.a, sc, 2, 0),
+               beam_err(&r, &p.a, sc, 0, 1), beam_err(&r, &p.a, sc, 1, 1), beam_err(&r, &p.a, sc, 2, 1),
+               steer_diff);
+        fflush(stdout);
+        free_pair(&p);
+    }
+    free_rendered(&r);
+}
+
+/* Talker and TV (speech), as mic_mode: the interferer is a voice */
+static void scenario_beam_tv(void)
+{
+    static const float talker_az[] = { 60.0f, 150.0f, 300.0f };
+    static const float tv_az[] = { 220.0f, 330.0f, 120.0f };
+    for (int k = 0; k < 3; k++) {
+        scene_t sc = base_scene("beam_tv", 32.0f);
+        sc.seed = 10 + k;
+        sc.talker_az = talker_az[k];
+        sc.tv = 1;
+        sc.tv_az = tv_az[k];
+        sc.tv_db = -54.0f;
+        add_requests(&sc, 4.0f);
+        run_proto_scene("beam_tv", &sc);
+    }
+}
+
+/* Talker in loud room noise and a fan: where a beam's directivity should show */
+static void scenario_beam_noise(void)
+{
+    static const float talker_az[] = { 60.0f, 150.0f, 300.0f };
+    static const float fan_az[] = { 200.0f, 30.0f, 170.0f };
+    for (int k = 0; k < 3; k++) {
+        scene_t sc = base_scene("beam_noise", 32.0f);
+        sc.seed = 20 + k;
+        sc.talker_az = talker_az[k];
+        sc.noise_db = -58.0f;
+        sc.fan_az = fan_az[k];
+        sc.fan_db = -58.0f;
+        add_requests(&sc, 4.0f);
+        run_proto_scene("beam_noise", &sc);
+    }
+}
+
+/*
+ * Diagnostic: per frame DOA results in the beam_tv and beam_noise scenes (BEAM,
+ * wake word steering, as the firmware), with the talker and interferer energy
+ * and the DOA of each source on its own, to csv_dir/wake_trace_<scene>_<seed>.csv.
+ */
+static void trace_scene(const char *name, const scene_t *sc)
+{
+    rendered_t r = render_scene(sc);
+    sim_cfg_t c = base_cfg();
+    c.aec_ref_channels = 1;
+    c.mode = MIC_MODE_BEAM;
+    run_t o = run_pipeline(&r, &c);
+
+    static doa_state_t dt;
+    static doa_state_t di;
+    doa_init(&dt);
+    doa_init(&di);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/wake_trace_%s_%u.csv", csv_dir ? csv_dir : ".", name, sc->seed);
+    FILE *f = fopen(path, "w");
+    static const dx_cfg_t vars[] = {
+        { 0.95f, DX_W_PHAT, 0.0f, 1.0f, 0 },     /* v0: doa.c */
+        { 0.0f,  DX_W_PHAT, 0.0f, 1.0f, 0 },     /* v1: no smoothing */
+        { 0.7f,  DX_W_PHAT, 0.0f, 1.0f, 0 },     /* v2: ~50 ms smoothing */
+        { 0.95f, DX_W_BETA, 0.7f, 1.0f, 0 },     /* v3: PHAT-beta 0.7 */
+        { 0.95f, DX_W_SNR,  0.0f, 1.005f, 0 },   /* v4: SNR weighted PHAT */
+        { 0.7f,  DX_W_SNR,  0.0f, 1.005f, 0 },   /* v5: SNR weighted, ~50 ms */
+        { 0.7f,  DX_W_SNR,  0.0f, 1.005f, 1 },   /* v6: v5, frame gate on weighted bins */
+        { 0.7f,  DX_W_BETA, 0.7f, 1.0f, 0 },     /* v7: PHAT-beta 0.7, ~50 ms */
+        { 0.7f,  DX_W_CSD,  0.0f, 1.0f, 0 },     /* v8: noise cross spectrum subtracted, ~50 ms */
+        { 0.95f, DX_W_CSD,  0.0f, 1.0f, 0 },     /* v9: noise cross spectrum subtracted, ~300 ms */
+        { 0.85f, DX_W_CSD,  0.0f, 1.0f, 0 },     /* v10: noise cross spectrum subtracted, ~100 ms */
+        { 0.8f,  DX_W_CSD,  0.0f, 1.0f, 0 },     /* v11: noise cross spectrum subtracted, ~75 ms */
+    };
+    enum { NV = sizeof(vars) / sizeof(vars[0]) };
+    static dx_state_t dv[NV];
+    for (int v = 0; v < NV; v++) {
+        dx_init(&dv[v], &vars[v]);
+    }
+    fprintf(f, "frame,wake,conv,doa_az,doa_upd,doa_conf,beam,e_talk_db,e_int_db,talk_az,talk_upd,int_az,int_upd,talker_az,int_src_az");
+    for (int v = 0; v < NV; v++) {
+        fprintf(f, ",v%d_az,v%d_upd,v%d_conf", v, v, v);
+    }
+    fprintf(f, "\n");
+    for (size_t fr = 0; fr < o.frames; fr++) {
+        static int32_t __attribute__((aligned(8))) t[4][FRAME];
+        static int32_t __attribute__((aligned(8))) n[4][FRAME];
+        double et = 0.0;
+        double en = 0.0;
+        for (unsigned i = 0; i < FRAME; i++) {
+            const size_t k = fr * FRAME + i;
+            for (unsigned m = 0; m < 4; m++) {
+                const float tv = r.talker[m].x[k];
+                const float nv = r.mic[m].x[k] - tv;
+                t[m][i] = to_q31(tv);
+                n[m][i] = to_q31(nv);
+                et += (double)tv * tv;
+                en += (double)nv * nv;
+            }
+        }
+        static float mf[4][DX_FRAME];
+        for (unsigned m = 0; m < 4; m++) {
+            for (unsigned i = 0; i < FRAME; i++) {
+                mf[m][i] = r.mic[m].x[fr * FRAME + i];
+            }
+        }
+        for (int v = 0; v < NV; v++) {
+            dx_process(&dv[v], (const float (*)[DX_FRAME])mf);
+        }
+        const doa_result_t *a = doa_process(&dt, &t[0][0], 0);
+        const doa_result_t *b = doa_process(&di, &n[0][0], 0);
+        fprintf(f, "%zu,%d,%d,%u,%u,%u,%u,%.1f,%.1f,%u,%u,%u,%u,%.0f,%.0f\n", fr, r.wake_frame[fr], r.conv_frame[fr],
+                o.doa[fr].azimuth_deg, o.doa[fr].updated, o.doa[fr].confidence, o.beam[fr],
+                DB(et / (4.0 * FRAME)), DB(en / (4.0 * FRAME)),
+                a->azimuth_deg, a->updated, b->azimuth_deg, b->updated,
+                sc->talker_az, sc->tv ? sc->tv_az : sc->fan_az);
+        fseek(f, -1, SEEK_CUR);
+        for (int v = 0; v < NV; v++) {
+            fprintf(f, ",%u,%d,%.2f", dv[v].azimuth_deg, dv[v].updated, dv[v].confidence);
+        }
+        fprintf(f, "\n");
+    }
+    fclose(f);
+    free_run(&o);
+    free_rendered(&r);
+}
+
+static void scenario_wake_trace(void)
+{
+    static const float talker_az[] = { 60.0f, 150.0f, 300.0f };
+    static const float tv_az[] = { 220.0f, 330.0f, 120.0f };
+    static const float fan_az[] = { 200.0f, 30.0f, 170.0f };
+    for (int k = 0; k < 3; k++) {
+        scene_t sc = base_scene("beam_tv", 32.0f);
+        sc.seed = 10 + k;
+        sc.talker_az = talker_az[k];
+        sc.tv = 1;
+        sc.tv_az = tv_az[k];
+        sc.tv_db = -54.0f;
+        add_requests(&sc, 4.0f);
+        trace_scene("tv", &sc);
+        scene_t sn = base_scene("beam_noise", 32.0f);
+        sn.seed = 20 + k;
+        sn.talker_az = talker_az[k];
+        sn.noise_db = -58.0f;
+        sn.fan_az = fan_az[k];
+        sn.fan_db = -58.0f;
+        add_requests(&sn, 4.0f);
+        trace_scene("noise", &sn);
+    }
+    static const float betas[] = { 0.85f, 0.92f, 0.95f };
+    for (int b = 0; b < 3; b++) {
+        for (int k = 0; k < 3; k++) {
+            scene_t sr = base_scene("reverb", 32.0f);
+            sr.seed = 50 + 3 * b + k;
+            sr.rt60_beta = betas[b];
+            sr.talker_az = talker_az[k];
+            sr.fan_az = 0.0f;
+            add_requests(&sr, 4.0f);
+            trace_scene("reverb", &sr);
+        }
+    }
+}
+
+/* Diagnostic: DOA variants on a lone talker, by room reverb: median and 90th percentile error */
+static void scenario_doa_reverb(void)
+{
+    static const float betas[] = { 0.7f, 0.85f, 0.92f, 0.95f };
+    static const dx_cfg_t vars[] = {
+        { 0.95f, DX_W_PHAT, 0.0f, 1.0f, 0 },
+        { 0.7f,  DX_W_PHAT, 0.0f, 1.0f, 0 },
+        { 0.7f,  DX_W_CSD,  0.0f, 1.0f, 0 },
+        { 0.85f, DX_W_CSD,  0.0f, 1.0f, 0 },
+        { 0.95f, DX_W_CSD,  0.0f, 1.0f, 0 },
+    };
+    static const char *names[] = { "phat_95", "phat_70", "csd_70", "csd_85", "csd_95" };
+    enum { NV = sizeof(vars) / sizeof(vars[0]) };
+    for (unsigned bi = 0; bi < 4; bi++) {
+        static unsigned errs[NV][20000];
+        unsigned n[NV] = { 0 };
+        for (int k = 0; k < 4; k++) {
+            scene_t sc = base_scene("doa_reverb", 32.0f);
+            sc.seed = 40 + k;
+            sc.rt60_beta = betas[bi];
+            sc.talker_az = 25.0f + 90.0f * k;
+            add_requests(&sc, 4.0f);
+            rendered_t r = render_scene(&sc);
+            static dx_state_t dv[NV];
+            for (int v = 0; v < NV; v++) {
+                dx_init(&dv[v], &vars[v]);
+            }
+            for (size_t fr = 0; fr < r.n / FRAME; fr++) {
+                static float mf[4][DX_FRAME];
+                for (unsigned m = 0; m < 4; m++) {
+                    for (unsigned i = 0; i < FRAME; i++) {
+                        mf[m][i] = r.mic[m].x[fr * FRAME + i];
+                    }
+                }
+                for (int v = 0; v < NV; v++) {
+                    dx_process(&dv[v], (const float (*)[DX_FRAME])mf);
+                    if (dv[v].updated && n[v] < 20000) {
+                        errs[v][n[v]++] = ang_err(dv[v].azimuth_deg, (unsigned)sc.talker_az);
+                    }
+                }
+            }
+            free_rendered(&r);
+        }
+        printf("{\"scenario\":\"doa_reverb\",\"beta\":%.2f", betas[bi]);
+        for (int v = 0; v < NV; v++) {
+            unsigned hist[181] = { 0 };
+            for (unsigned i = 0; i < n[v]; i++) {
+                hist[errs[v][i]]++;
+            }
+            unsigned acc = 0, med = 0, p90 = 0, within30 = 0;
+            for (unsigned d = 0; d <= 180; d++) {
+                acc += hist[d];
+                if (!med && acc >= n[v] / 2) med = d ? d : 1;
+                if (!p90 && acc >= n[v] * 9 / 10) p90 = d ? d : 1;
+                if (d <= 30) within30 = acc;
+            }
+            printf(",\"%s\":{\"n\":%u,\"med\":%u,\"p90\":%u,\"in30\":%.2f}", names[v], n[v], med, p90,
+                   n[v] ? (double)within30 / n[v] : 0.0);
+        }
+        printf("}\n");
+        fflush(stdout);
+    }
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) {
@@ -1152,5 +1491,10 @@ int main(int argc, char **argv)
     if (all || !strcmp(s, "ic_check")) scenario_ic_check();
     if (!strcmp(s, "level_check")) scenario_level_check();
     if (!strcmp(s, "smoke")) scenario_smoke();
+    if (!strcmp(s, "beam_pattern")) scenario_beam_pattern();
+    if (!strcmp(s, "beam_tv")) scenario_beam_tv();
+    if (!strcmp(s, "beam_noise")) scenario_beam_noise();
+    if (!strcmp(s, "wake_trace")) scenario_wake_trace();
+    if (!strcmp(s, "doa_reverb")) scenario_doa_reverb();
     return 0;
 }
