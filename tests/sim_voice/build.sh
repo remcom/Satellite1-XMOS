@@ -36,6 +36,7 @@ INC=(
   -I"$VOICE/api/aec" -I"$VOICE/src/aec"
   -I"$VOICE/api/ic" -I"$VOICE/src/ic"
   -I"$VOICE/api/ns" -I"$VOICE/src/ns"
+  -I"$VOICE/api/agc" -I"$VOICE/src/agc"
   -I"$VOICE/api/vnr"
   -I"$FW/src"
   -I"$FW/audio_pipelines/reference/fixed_delay"
@@ -57,10 +58,10 @@ for d in vect bfp dct fft filter scalar arch/ref etc/xmath_fft_lut; do
     compile "$f" "-w -I$XMATH/src/vect -I$XMATH/src/etc/xmath_fft_lut"
   done < <(find "$XMATH/src/$d" -name '*.c' | sort)
 done
-for f in "$VOICE"/src/aec/*.c "$VOICE"/src/ic/*.c "$VOICE"/src/ns/*.c "$OUT/aec_conf/aec_task_distribution.c"; do
+for f in "$VOICE"/src/aec/*.c "$VOICE"/src/ic/*.c "$VOICE"/src/ns/*.c "$VOICE"/src/agc/*.c "$OUT/aec_conf/aec_task_distribution.c"; do
   compile "$f" "-w"
 done
-for f in doa mic_frontend beamformer vnr_hold echo_gate; do
+for f in doa mic_frontend beamformer vnr_hold echo_gate wake_agc; do
   compile "$FW/src/audio/$f.c" "-Wall -Wextra -Werror"
 done
 for f in sim_room sim_sdbeam sim_doa_exp sim_pipeline sim_main; do

@@ -360,6 +360,39 @@ Music only, nobody talking (post-AEC DOA, steering on any speech):
 | 3 | 270 | 19.2 | 19.1 |
 
 
+### Wake word channel level (`level_sweep`, `level_jump`)
+
+What the wake word engine gets: channel 1 times ESPHome's `gain_factor` 4,
+with the default settings (PAIR_EW, AEC+IC+NS, mic gain 20 dB). Talker level
+is the raw mic level while talking (-50 dBFS is the usual one of the other
+scenarios); rms and peak of the second and third wake words in dBFS, and the
+share of samples the x4 clips. Without the AGC, peaks over full scale are
+what the x4 would have made of them before clipping.
+
+| talker | fixed gain: rms / peak / clipped | wake word AGC: rms / peak / clipped | first wake word, AGC: rms / peak |
+|---|---|---|---|
+| -65 | -39.8 / -21.5 / 0% | -29.1 / -9.6 / 0% | -39.2 / -25.0 |
+| -60 | -33.7 / -16.4 / 0% | -22.7 / -4.8 / 0% | -32.7 / -18.0 |
+| -55 | -27.6 / -11.4 / 0% | -22.1 / -5.8 / 0% | -27.1 / -12.0 |
+| -50 | -21.2 / -5.4 / 0% | -20.6 / -5.5 / 0% | -22.6 / -8.0 |
+| -45 | -15.4 / +0.3 / 0.01% | -19.9 / -5.2 / 0% | -19.4 / -5.1 |
+| -40 | -10.0 / +5.7 / 1.5% | -19.9 / -5.4 / 0% | -16.8 / -3.7 |
+| -35 | -3.3 / +11.5 / 13% | -19.5 / -4.9 / 0% | -15.8 / -2.8 |
+| -30 | +1.5 / +12.0 / 29% | -16.4 / -5.9 / 0% | -13.6 / -1.5 |
+| -25 | +5.2 / +12.0 / 46% | -13.3 / -6.4 / 0% | -11.0 / -1.0 |
+
+Quiet room (noise -68 dBFS), gain rise +0.1 dB a frame (the adopted +0.2 dB
+gives -60: -28.1 instead of -30.9 dBFS in noise at -58 dBFS, the rest
+within 0.5 dB). The fixed gain works between about -60 and -45 (clipping
+from 5 dB above the usual level); the AGC keeps -60..-25 within 10 dB and
+never clips. The SNR is the same either way: the AGC does not make soft
+speech in noise any cleaner, and it does not raise frames the VNR does not
+take for speech, so the first soft wake word after louder speech gets
+little of it (`level_jump`: -62 dB after -50 dB, +2 dB). A loud wake word
+right after a soft one is soft clipped instead of clipped (-36 dB after
+-62 dB: 4.8% of samples clipped without the AGC, none with it, at 4 dB less
+SNR from the soft clipping).
+
 ### Wake word channel tap (SNR only, no wake word model)
 
 | noise dBFS | AEC+IC+NS | AEC+IC | AEC |
