@@ -63,7 +63,7 @@ done
 for f in doa mic_frontend beamformer vnr_hold echo_gate; do
   compile "$FW/src/audio/$f.c" "-Wall -Wextra -Werror"
 done
-for f in sim_room sim_pipeline sim_main; do
+for f in sim_room sim_sdbeam sim_doa_exp sim_pipeline sim_main; do
   compile "$HERE/$f.c" "-Wall -Wextra -Wno-unused-parameter"
 done
 

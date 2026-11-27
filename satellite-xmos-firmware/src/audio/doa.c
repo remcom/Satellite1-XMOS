@@ -7,8 +7,6 @@
 #include "audio/mic_frontend.h"
 
 #define DOA_PI          3.14159265358979f
-/* Spectrum mantissas are scaled to keep PHAT products and their squares well inside float range */
-#define DOA_BIN_SCALE   (1.0f / 65536.0f)
 
 #if DOA_FRAME_SIZE > DOA_FFT_N
 #error DOA_FFT_N must hold a whole frame
@@ -54,18 +52,24 @@ void doa_set_playback_hangover(doa_state_t *state, unsigned frames)
     }
 }
 
-/* Normalised (PHAT) b * conj(a), whose correlation peaks at t_b - t_a. */
-static doa_complex_t phat(doa_complex_t a, doa_complex_t b)
+/* b * conj(a), whose correlation peaks at t_b - t_a */
+static doa_complex_t cross_product(doa_complex_t a, doa_complex_t b)
 {
-    doa_complex_t g = {
+    const doa_complex_t g = {
         b.re * a.re + b.im * a.im,
         b.im * a.re - b.re * a.im,
     };
+    return g;
+}
+
+/* g scaled to magnitude weight (PHAT, weighted) */
+static doa_complex_t phat(doa_complex_t g, float weight)
+{
     const float mag = sqrtf(g.re * g.re + g.im * g.im);
     if (mag > 1e-30f) {
-        const float inv = 1.0f / mag;
-        g.re *= inv;
-        g.im *= inv;
+        const float scale = weight / mag;
+        g.re *= scale;
+        g.im *= scale;
     } else {
         g.re = 0.0f;
         g.im = 0.0f;
@@ -131,40 +135,99 @@ static float find_peak(const float *corr, float norm, float *confidence)
     return ((float)best_lag + delta) / (float)DOA_INTERP;
 }
 
-static doa_complex_t spectrum_bin(const bfp_complex_s32_t *x, unsigned k)
+typedef struct {
+    bfp_s32_t frame;                        /* the FFT works in place: spectrum points into it */
+    const bfp_complex_s32_t *spectrum;
+    float scale;    /* mantissa to full scale (1.0 = a full scale input sample) */
+} doa_spectrum_t;
+
+static doa_complex_t spectrum_bin(const doa_spectrum_t *x, unsigned k)
 {
     const doa_complex_t v = {
-        (float)x->data[k].re * DOA_BIN_SCALE,
-        (float)x->data[k].im * DOA_BIN_SCALE,
+        (float)x->spectrum->data[k].re * x->scale,
+        (float)x->spectrum->data[k].im * x->scale,
     };
     return v;
 }
 
-static int estimate(doa_state_t *state, const int32_t *mics, int restart)
+/*
+ * Real FFT of each windowed mic on the VPU, into state->fft_buf. Every
+ * spectrum has its own block exponent, folded into the scale so the noise
+ * cross spectra of different frames add up.
+ */
+static void mic_spectra(doa_state_t *state, const int32_t *mics, doa_spectrum_t spectrum[4])
 {
-    /*
-     * Real FFT of each windowed mic on the VPU. Every spectrum has its own
-     * block exponent, which PHAT normalises away, so only the mantissas are used.
-     */
-    bfp_s32_t frame[4];
-    const bfp_complex_s32_t *spectrum[4];
     for (unsigned ch = 0; ch < 4; ch++) {
         int32_t *buf = state->fft_buf[ch];
         vect_s32_mul(buf, &mics[ch * DOA_FRAME_SIZE], state->window_q30, DOA_FRAME_SIZE, 0, 0);
         memset(&buf[DOA_FRAME_SIZE], 0, (DOA_FFT_N - DOA_FRAME_SIZE) * sizeof(int32_t));
-        bfp_s32_init(&frame[ch], buf, 0, DOA_FFT_N, 1);
-        spectrum[ch] = bfp_fft_forward_mono(&frame[ch]);
+        bfp_s32_init(&spectrum[ch].frame, buf, 0, DOA_FFT_N, 1);
+        spectrum[ch].spectrum = bfp_fft_forward_mono(&spectrum[ch].frame);
+        spectrum[ch].scale = ldexpf(1.0f, spectrum[ch].spectrum->exp - 31);
     }
+}
 
+static float bin_power(const doa_spectrum_t spectrum[4], unsigned k)
+{
+    float p = 0.0f;
+    for (unsigned ch = 0; ch < 4; ch++) {
+        const doa_complex_t v = spectrum_bin(&spectrum[ch], k);
+        p += v.re * v.re + v.im * v.im;
+    }
+    return p;
+}
+
+/* A frame without speech or echo: fold it into the noise cross spectra */
+static void update_noise(doa_state_t *state, const doa_spectrum_t spectrum[4])
+{
+    const float b = (state->noise_frames < DOA_NOISE_AVG_FRAMES) ?
+                    1.0f / (float)(state->noise_frames + 1) : 1.0f / (float)DOA_NOISE_AVG_FRAMES;
+    for (unsigned i = 0; i < DOA_BIN_COUNT; i++) {
+        const unsigned k = DOA_BIN_LO + i;
+        const doa_complex_t g_ns = cross_product(spectrum_bin(&spectrum[CH_N], k), spectrum_bin(&spectrum[CH_S], k));
+        const doa_complex_t g_ew = cross_product(spectrum_bin(&spectrum[CH_E], k), spectrum_bin(&spectrum[CH_W], k));
+        doa_complex_t *n_ns = &state->noise_cross[PAIR_NS][i];
+        doa_complex_t *n_ew = &state->noise_cross[PAIR_EW][i];
+        n_ns->re += b * (g_ns.re - n_ns->re);
+        n_ns->im += b * (g_ns.im - n_ns->im);
+        n_ew->re += b * (g_ew.re - n_ew->re);
+        n_ew->im += b * (g_ew.im - n_ew->im);
+        state->noise_power[i] += b * (bin_power(spectrum, k) - state->noise_power[i]);
+    }
+    if (state->noise_frames < UINT32_MAX) {
+        state->noise_frames++;
+    }
+}
+
+/* Weight of a bin: 0 at the noise power, rising to 1 ~10 dB above it */
+static float bin_weight(const doa_state_t *state, unsigned i, float power)
+{
+    if (state->noise_frames < DOA_NOISE_MIN_FRAMES) {
+        return 1.0f;
+    }
+    const float w = (power / (state->noise_power[i] * DOA_NOISE_WEIGHT_OFFSET + 1e-30f) - 1.0f) /
+                    DOA_NOISE_WEIGHT_RANGE;
+    return (w < 0.0f) ? 0.0f : (w > 1.0f) ? 1.0f : w;
+}
+
+static int estimate(doa_state_t *state, const doa_spectrum_t spectrum[4], int restart)
+{
     const float alpha = restart ? 0.0f : DOA_SMOOTHING;
     float norm_ns = 0.0f;
     float norm_ew = 0.0f;
     for (unsigned i = 0; i < DOA_BIN_COUNT; i++) {
         const unsigned k = DOA_BIN_LO + i;
-        const doa_complex_t g_ns = phat(spectrum_bin(spectrum[CH_N], k),
-                                        spectrum_bin(spectrum[CH_S], k));   /* peaks at t_S - t_N: positive towards North */
-        const doa_complex_t g_ew = phat(spectrum_bin(spectrum[CH_E], k),
-                                        spectrum_bin(spectrum[CH_W], k));   /* peaks at t_W - t_E: positive towards East */
+        const float weight = bin_weight(state, i, bin_power(spectrum, k));
+        /* peaks at t_S - t_N: positive towards North */
+        doa_complex_t x_ns = cross_product(spectrum_bin(&spectrum[CH_N], k), spectrum_bin(&spectrum[CH_S], k));
+        /* peaks at t_W - t_E: positive towards East */
+        doa_complex_t x_ew = cross_product(spectrum_bin(&spectrum[CH_E], k), spectrum_bin(&spectrum[CH_W], k));
+        x_ns.re -= state->noise_cross[PAIR_NS][i].re;
+        x_ns.im -= state->noise_cross[PAIR_NS][i].im;
+        x_ew.re -= state->noise_cross[PAIR_EW][i].re;
+        x_ew.im -= state->noise_cross[PAIR_EW][i].im;
+        const doa_complex_t g_ns = phat(x_ns, weight);
+        const doa_complex_t g_ew = phat(x_ew, weight);
         doa_complex_t *c_ns = &state->cross[PAIR_NS][i];
         doa_complex_t *c_ew = &state->cross[PAIR_EW][i];
         c_ns->re = alpha * c_ns->re + (1.0f - alpha) * g_ns.re;
@@ -241,8 +304,15 @@ const doa_result_t *doa_process(doa_state_t *state,
     const int echo = state->frames_since_playback < state->playback_hangover_frames;
 
     state->result.updated = 0;
+    doa_spectrum_t spectrum[4];
+    if (!echo && energy > DOA_MIN_ENERGY) {
+        mic_spectra(state, mics, spectrum);
+        if (!speech) {
+            update_noise(state, spectrum);
+        }
+    }
     if (speech && !echo) {
-        if (estimate(state, mics, state->frames_since_speech >= DOA_RESET_FRAMES)) {
+        if (estimate(state, spectrum, state->frames_since_speech >= DOA_RESET_FRAMES)) {
             state->result.updated = 1;
             state->frames_since_result = 0;
         }

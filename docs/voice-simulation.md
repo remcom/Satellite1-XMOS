@@ -32,7 +32,10 @@ follow.
     is half the difference of the two outputs; noise, echo and TV are half the
     sum. Linear filtering of the talker (the beam, the IC filter) therefore
     does not count against it, but the NS's spectral changes are not
-    penalised either.
+    penalised either. The inverted run replays the steering (beam azimuth,
+    AUTO_PAIR mic) of the first run: left to its own DOA it steered
+    differently in most frames of the BEAM runs, so the two outputs went
+    through different beams. Results before this fix moved by up to 0.05 dB.
   - *DOA*: results per wake word, and how far from the talker the beam
     pointed after each wake word.
 
@@ -117,6 +120,153 @@ scene and needs checking on hardware, as does all of this.
 | fixed_delay | 424,668 / 407,588 | 397,676 / 368,052 |
 | bypass | 382,876 / 384,252 | 355,372 / 334,700 |
 | aec4 | 424,668 / 508,340 | 397,676 / 421,996 |
+
+## Prototype: superdirective beam and speech-aware steering
+
+Simulator only (`tests/sim_voice/sim_sdbeam.c`, `sim_pipeline.c`), not in
+the firmware. Scenarios `beam_pattern`, `beam_tv` and `beam_noise`; one
+configuration per process with `SIM_PROTO_CFG=<label>`.
+
+- **Superdirective beam** (`sd<N>`): an STFT MVDR beam against diffuse noise,
+  with the white noise gain kept at or above -N dB, in place of the
+  delay-and-sum target beam. Same blocking beam, same IC after it.
+  Directivity 6-7 dB from 500 Hz to 6 kHz (`beam_pattern`), against 0.4 dB
+  at 500 Hz and 1.5 dB at 1 kHz for delay-and-sum.
+- **DOA VNR gate** (`_gate`): the DOA only takes frames the VNR rates as
+  speech.
+- **Beam selection** (`_sel`): outside a conversation the beam points at the
+  one of 6 fixed superdirective beams (60 degrees apart) whose speech-band
+  power has just risen most above its own ~7.5 s average, so a source that
+  talks all the time does not pull it. `_selwake`: the wake word keeps that
+  beam instead of steering at the DOA wake word direction.
+- **Mic mismatch** (`_mm`): gains +-0.9 dB, low frequency roll-off 50-100 Hz.
+
+Mean of 3 scenes each, ch1 SNR in dB (second and third wake words, all
+commands), and how far the beam pointed from the talker (degrees) during the
+three wake words and the commands after them:
+
+| cfg | TV: wake | TV: cmd | TV: beam err wake / cmd | noise+fan: wake | noise+fan: cmd | noise+fan: beam err wake / cmd |
+|---|---|---|---|---|---|---|
+| pair_ew (default) | 3.3 | 3.7 | - | 6.5 | 6.6 | - |
+| ds (BEAM today) | 3.4 | 3.5 | 133 / 159 | 6.8 | 7.0 | 113 / 113 |
+| sd6 | -1.2 | -1.4 | 133 / 159 | 3.9 | 4.0 | 113 / 113 |
+| sd6_gate | -1.3 | -1.4 | 134 / 159 | 7.5 | 8.2 | 83 / 54 |
+| ds_sel | 3.9 | 3.4 | 55 / 162 | 9.9 | 6.5 | 45 / 112 |
+| sd6_sel | 3.7 | -1.6 | 45 / 162 | 9.3 | 4.1 | 40 / 113 |
+| **ds_selwake** | **3.9** | **4.1** | 55 / 77 | **10.0** | **10.0** | 45 / 90 |
+| sd6_selwake | 3.7 | 3.4 | 45 / 83 | 9.3 | 9.3 | 40 / 70 |
+| sd10_selwake | 4.0 | 3.8 | 52 / 83 | 9.1 | 8.9 | 41 / 63 |
+| ds_mm | 3.4 | 3.5 | | 7.1 | 7.5 | |
+| sd6_mm | -0.4 | -0.4 | | 6.0 | 5.8 | |
+| sd6_selwake_mm | 3.4 | 3.8 | | 9.5 | 8.9 | |
+
+- **The steering, not the beam, is what limits BEAM today.** The DOA wake
+  word steering points the beam at the TV (TV scenes) or the fan (noise
+  scenes) after the first wake word: 110-170 degrees off the talker for the
+  rest of the scene. The talker is 4 dB (TV) and 8 dB (fan) louder.
+- **Beam selection by onset** points the beam within ~50 degrees of the
+  talker during wake words (6 beams, so up to 30 degrees is the grid).
+  Keeping that beam through the request (`ds_selwake`) gives +0.4..+0.7 dB
+  (TV) and +3.0..+3.5 dB (noise) on ch1 against PAIR_EW and today's BEAM.
+- **The VNR gate on the DOA** helps against non-speech (the fan: commands
+  +4 dB with the superdirective beam), not against a TV, which is speech.
+  The VNR here is an oracle that counts the TV as speech, as the real one
+  would.
+- **The superdirective beam does not beat delay-and-sum here**, even when
+  both point the same way (`ds_selwake` against `sd6_selwake`: -0.2 to
+  -0.7 dB). The IC after the beam already cancels much of what its
+  directivity would; steering errors of 30-60 degrees cost a narrower beam
+  more; and pointed the wrong way (`sd6`) it is 4.5 dB worse. The mismatch
+  runs did not come out worse, but the mismatch model's 50-100 Hz roll-off
+  also cuts the fan's 120 Hz hum, so they are no clean test of it.
+
+Not simulated: a TV with long pauses (each restart is an onset the
+selection could follow), moving talkers, the device housing, and the real
+VNR (the selection and the gate used the oracle).
+
+### Why the wake word steering picks the interferer
+
+Diagnostic scenarios `wake_trace` (per frame CSV of the firmware DOA, each
+source's DOA on its own, and DOA variants, into the csv dir) and
+`doa_reverb`. The variants are a float copy of `doa.c`
+(`tests/sim_voice/sim_doa_exp.c`); the unchanged copy reproduces the
+firmware's results frame for frame. Wake word directions below come from
+running the `wake_direction()` rule of `mic_frontend.c` on each variant's
+results.
+
+Each source on its own is located to within 2-9 degrees (median). In the
+mix, two things go wrong:
+
+1. **The DOA reports the interferer while the talker is louder.** In frames
+   where the talker is over 3 dB louder than everything else, the firmware
+   DOA points at the talker in 43% (TV) and 10% (fan) of them, and at the
+   interferer in 21% and 74%. PHAT gives every bin the same weight, so the
+   bins between speech harmonics and above its formants, where the fan or
+   TV is stronger, outvote the talker. And the 0.95 smoothing (~300 ms)
+   carries the TV, which never stops, into the start of the wake word.
+2. **The wake word rule favours whatever is always there.** Its 1.5 s
+   window holds ~0.4 s of TV from before the wake word and the 300 ms until
+   detection, and the novelty penalty for a direction the idle speech came
+   from tops out at half the score. A TV with twice the DOA results in the
+   window still wins.
+
+| DOA | wake rule | TV: wakes within 45 deg / 9 (mean err) | fan: within 45 deg / 9 | reverb: within 45 deg / 27 |
+|---|---|---|---|---|
+| firmware | firmware | 0 (161) | 1 (112) | 25 (23) |
+| firmware | changed (below) | 2 (124) | 1 (162) | 26 (18) |
+| noise CSD subtraction, smoothing 0.95 | changed | 1 (139) | 9 (14) | 26 (9) |
+| noise CSD subtraction, smoothing 0.85 | changed | 6 (51) | 9 (16) | 27 (8) |
+| **noise CSD subtraction, smoothing 0.7** | **changed** | **8 (24)** | **9 (15)** | **27 (9)** |
+
+- **Noise CSD subtraction**: the cross spectrum of each mic pair is averaged
+  (~0.5 s) over the frames the DOA does not count as speech, and subtracted
+  from each frame's cross spectrum before the PHAT normalisation; each bin is
+  then weighted by its power over the averaged noise power (0 at the noise,
+  1 at 10 dB over it). This removes a steady source (fan, hood, hum), not a
+  TV. On its own it fixes the fan: 91% of talker-dominated frames point at
+  the talker.
+- **Changed wake rule**: the last 300 ms before the wake word is reported
+  are left out (a new MIC_FRONTEND_WAKE_LATENCY_FRAMES of 20, the detection latency),
+  the window is ~1 s (70 frames), and the novelty penalty is the full idle
+  share (MIC_FRONTEND_WAKE_NOVELTY 1.0).
+- **Smoothing 0.7** makes each result less exact in a live room (lone
+  talker, beta 0.92: 48% of results within 30 degrees against 62% for the
+  firmware), but the wake rule votes over ~50 results and still finds the
+  talker (27/27 in reverb).
+- Still wrong: the first wake word of one scene (4 s of idle history, too
+  little for the novelty) and the scene with the TV straight opposite the
+  talker (180 degrees, where the mixed pair delays cancel).
+
+**Adopted in the firmware** (`doa.c`, `mic_frontend.c`): the noise CSD
+subtraction, DOA_SMOOTHING 0.7, and the changed wake rule, with one
+addition: when no group ranks above zero (one person who talks from the
+same place all day holds all the idle speech) the largest group wins. RAM:
+tile 1 +2 KB. Simulated ch1 SNR, mean of 3 scenes (`beam_tv`,
+`beam_noise`), against the firmware before:
+
+| cfg | TV: wake | TV: cmd | noise+fan: wake | noise+fan: cmd | beam err wake / cmd, TV | noise+fan |
+|---|---|---|---|---|---|---|
+| pair_ew (default, unchanged) | 3.3 | 3.7 | 6.5 | 6.6 | - | - |
+| BEAM before | 3.4 | 3.5 | 6.8 | 7.0 | 132 / 159 | 113 / 113 |
+| **BEAM now** | **4.2** | **4.5** | **12.0** | **11.9** | 52 / 24 | 42 / 13 |
+| BEAM, DOA_SMOOTHING 0.85 | 4.1 | 4.3 | 12.2 | 11.9 | 61 / 45 | 40 / 14 |
+| onset beam selection (prototype) | 3.9 | 4.1 | 10.0 | 10.0 | 55 / 77 | 45 / 90 |
+
+The wake word beam error includes the first wake word of each scene, said
+before any steering. The other scenarios against the firmware before:
+
+- `mic_mode`, BEAM: wake +0.4..+1.0 dB, commands +0.6..+1.2 dB.
+  AUTO_PAIR: +0.1..+0.4 dB in two scenes, -0.9 dB (wake) and -0.7 dB
+  (commands) with the talker at 150 degrees.
+- `ic_reset`: BEAM commands +0.4..+5.0 dB (wake words -1.8 dB with the
+  talker at 300 degrees); AUTO_PAIR commands +1.7 dB at 120 degrees, -1.5 and -0.4 dB at
+  210 and 300 degrees. A pair is picked by the 90 degree sector the wake word falls in,
+  so a talker near a sector edge (210 degrees) flips with small changes of
+  the estimate.
+- `doa_playback` (aec4, DOA after the AEC): wake words +0.2..+7.8 dB,
+  commands +0.2..+4.3 dB.
+- `steer_playback`: aec4 commands -1.4 dB in one of three scenes.
+
 
 ## Results
 ### Mono AEC reference: stereo music, mono speaker

@@ -908,6 +908,13 @@ static void idle_beam(mic_frontend_state_t *st, unsigned frames)
     }
 }
 
+/* The wake word is reported MIC_FRONTEND_WAKE_LATENCY_FRAMES after it ended, without speech in between */
+static int wake_word(mic_frontend_state_t *st, mic_mode_t mode)
+{
+    idle_beam(st, MIC_FRONTEND_WAKE_LATENCY_FRAMES);
+    return mic_frontend_wake_word(st, mode);
+}
+
 static void test_wake_word_steering(void)
 {
     mic_frontend_state_t st;
@@ -918,7 +925,7 @@ static void test_wake_word_steering(void)
     /* a wake word from a new direction steers at once, without the stable time or the dwell */
     feed_beam_doa(&st, 120, 10);
     CHECK(st.beam.azimuth_deg == 0, "speech alone steered too early");
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
+    CHECK(wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
     CHECK(st.beam.azimuth_deg == 120, "wake word steered to %u, expected 120", st.beam.azimuth_deg);
     CHECK(st.beam.fade, "a wake word steer must crossfade");
     CHECK(st.wake_azimuth_deg == 120, "wake direction %u", st.wake_azimuth_deg);
@@ -928,39 +935,39 @@ static void test_wake_word_steering(void)
     for (int i = 0; i < 10; i++) {
         feed_beam_doa(&st, (i & 1) ? 355 : 15, 1);
     }
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
+    CHECK(wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
     CHECK(st.beam.azimuth_deg == 5, "wake word steered to %u, expected 5", st.beam.azimuth_deg);
 
     /* a wake word within the hold angle leaves the beam alone */
     idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
     feed_beam_doa(&st, 5 + MIC_FRONTEND_BEAM_HOLD_DEG, 10);
     st.beam.fade = 0;
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
+    CHECK(wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
     CHECK(st.beam.azimuth_deg == 5 && !st.beam.fade, "a small correction moved the beam to %u",
           st.beam.azimuth_deg);
 
     /* too few located frames, or too old ones, give no direction */
     idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
     feed_beam_doa(&st, 200, MIC_FRONTEND_WAKE_MIN_RESULTS - 1);
-    CHECK(!mic_frontend_wake_word(&st, MIC_MODE_BEAM), "located a wake word from too few results");
+    CHECK(!wake_word(&st, MIC_MODE_BEAM), "located a wake word from too few results");
     feed_beam_doa(&st, 200, 1);
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 200,
+    CHECK(wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 200,
           "beam at %u, expected 200", st.beam.azimuth_deg);
     idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
-    CHECK(!mic_frontend_wake_word(&st, MIC_MODE_BEAM), "used DOA results older than the window");
+    CHECK(!wake_word(&st, MIC_MODE_BEAM), "used DOA results older than the window");
 
     /* results spread all around (reverb, several talkers at once) give no direction */
     for (int i = 0; i < 40; i++) {
         feed_beam_doa(&st, (unsigned)(i * 45) % 360, 1);
     }
-    CHECK(!mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 200,
+    CHECK(!wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 200,
           "scattered results moved the beam to %u", st.beam.azimuth_deg);
 
     /* the history keeps the most recent results */
     idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
     feed_beam_doa(&st, 150, 15);
     feed_beam_doa(&st, 300, MIC_FRONTEND_WAKE_HISTORY);
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 300,
+    CHECK(wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 300,
           "beam at %u, expected 300", st.beam.azimuth_deg);
 }
 
@@ -974,31 +981,48 @@ static void test_wake_word_beside_tv(void)
     idle_beam(&st, MIC_FRONTEND_AUTO_MIN_DWELL_FRAMES);
     feed_beam_doa(&st, 270, 20);
     feed_beam_doa(&st, 60, 35);
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 60,
+    CHECK(wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 60,
           "beam at %u, expected the wake word at 60", st.beam.azimuth_deg);
 
-    /* a TV that talks all the time loses to a wake word with as many located frames ... */
+    /* a TV that talks all the time loses to a wake word with fewer located frames ... */
     mic_frontend_set_steering(&st, STEER_POLICY_WAKE_WORD, 0);
     feed_beam_doa(&st, 200, MIC_FRONTEND_IDLE_DOA_FRAMES);
     feed_beam_doa(&st, 110, MIC_FRONTEND_WAKE_HISTORY / 2);
     feed_beam_doa(&st, 200, MIC_FRONTEND_WAKE_HISTORY / 4);
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 110,
+    CHECK(wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 110,
           "beam at %u, expected the wake word at 110 beside the TV", st.beam.azimuth_deg);
-    /* ... though not to one that hardly produced any */
+    /* ... though not to one with too small a share of them */
     feed_beam_doa(&st, 200, MIC_FRONTEND_WAKE_HISTORY - 8);
     feed_beam_doa(&st, 30, 8);
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 200,
+    CHECK(wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 200,
           "beam at %u, expected the TV to win", st.beam.azimuth_deg);
 
-    /* the talker's own usual place wins over a stray voice with half the frames */
+    /*
+     * A talker who speaks from one place all day is told apart from a TV only
+     * by their share of the window: a voice from elsewhere with half their
+     * frames wins, ...
+     */
     mic_frontend_init(&st);
     feed_beam_doa(&st, 0, 1);
     feed_beam_doa(&st, 90, MIC_FRONTEND_IDLE_DOA_FRAMES);
     idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
-    feed_beam_doa(&st, 250, 15);
+    feed_beam_doa(&st, 250, 16);
     feed_beam_doa(&st, 90, 32);
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 90,
+    CHECK(wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 250,
+          "beam at %u, expected the new voice at 250", st.beam.azimuth_deg);
+    /* ... one with too small a share does not, ... */
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    feed_beam_doa(&st, 250, 8);
+    feed_beam_doa(&st, 90, 32);
+    CHECK(wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 90,
           "beam at %u, expected the usual talker at 90", st.beam.azimuth_deg);
+    /* ... and alone they are located although no group ranks above zero */
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    feed_beam_doa(&st, 250, 30);
+    idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
+    feed_beam_doa(&st, 90, 30);
+    CHECK(wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 90,
+          "beam at %u, expected the usual talker alone at 90", st.beam.azimuth_deg);
 }
 
 static void test_steer_policies(void)
@@ -1015,7 +1039,7 @@ static void test_steer_policies(void)
     /* ... a wake word does */
     idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
     feed_beam_doa(&st, 90, 20);
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 90,
+    CHECK(wake_word(&st, MIC_MODE_BEAM) && st.beam.azimuth_deg == 90,
           "beam at %u, expected the wake word at 90", st.beam.azimuth_deg);
     /* and re-entering the beam mode returns to the wake word, not to the last DOA */
     mic_frontend_update(&st, MIC_MODE_PAIR_EW, &(doa_result_t){0});
@@ -1026,7 +1050,7 @@ static void test_steer_policies(void)
     mic_frontend_set_steering(&st, STEER_POLICY_FIXED, 0);
     idle_beam(&st, MIC_FRONTEND_WAKE_WINDOW_FRAMES);
     feed_beam_doa(&st, 300, 3 * MIC_FRONTEND_AUTO_STABLE_FRAMES);
-    CHECK(mic_frontend_wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
+    CHECK(wake_word(&st, MIC_MODE_BEAM), "the wake word was not located");
     CHECK(st.beam.azimuth_deg == 90, "fixed beam moved to %u", st.beam.azimuth_deg);
     CHECK(st.wake_azimuth_deg == 300, "fixed policy must still record the wake word, %u", st.wake_azimuth_deg);
     mic_frontend_update(&st, MIC_MODE_PAIR_EW, &(doa_result_t){0});

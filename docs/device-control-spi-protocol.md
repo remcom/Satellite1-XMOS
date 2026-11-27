@@ -377,7 +377,8 @@ Read responses start with the command status byte, like the other servicers:
   `SERVICER_WRONG_PAYLOAD`.
 - `WAKE_EVENT`: write `1` right after a wake word was detected, `0` when the
   conversation it started has ended. On `1` the device locates the wake word
-  from the DOA results of the last ~1.5 s and, unless the policy is `2`,
+  from the DOA results of the ~0.75 s before the last ~300 ms (the time a
+  detection takes to be reported) and, unless the policy is `2`,
   steers the beam (or picks the pair facing it) within a frame. Read `BEAM`
   ~50 ms later for the new steering. While a conversation is active, speech
   does not re-steer, for at most 60 s; another `1` (a new wake word) restarts

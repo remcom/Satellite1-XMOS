@@ -257,10 +257,17 @@ static unsigned vector_azimuth(float x, float y)
     return (unsigned)lrintf(deg) % 360;
 }
 
+/* A DOA result in the wake word window: old enough to be the wake word, not the time it took to report it */
+static int in_wake_window(const mic_frontend_state_t *state, const mic_frontend_doa_entry_t *e)
+{
+    const uint32_t age = state->frame_count - e->frame;
+    return age >= MIC_FRONTEND_WAKE_LATENCY_FRAMES && age < MIC_FRONTEND_WAKE_WINDOW_FRAMES;
+}
+
 /*
  * Direction of the wake word: the confidence weighted mean of a group of
- * recent DOA results within MIC_FRONTEND_WAKE_CLUSTER_DEG of one of them.
- * Speech from elsewhere in the window (a TV before and after the wake word,
+ * DOA results in the wake word window within MIC_FRONTEND_WAKE_CLUSTER_DEG of
+ * one of them. Speech from elsewhere in the window (a TV before the wake word,
  * the start of the command) forms groups of its own; the best ranked one
  * wins, see MIC_FRONTEND_WAKE_NOVELTY. Results spread too widely to have a
  * group with MIC_FRONTEND_WAKE_MIN_SHARE of them give no direction.
@@ -273,15 +280,17 @@ static int wake_direction(const mic_frontend_state_t *state, unsigned *azimuth_d
     const mic_frontend_doa_entry_t *h = state->doa_history;
     float total = 0.0f;
     for (unsigned i = 0; i < state->doa_history_len; i++) {
-        if (state->frame_count - h[i].frame < MIC_FRONTEND_WAKE_WINDOW_FRAMES) {
+        if (in_wake_window(state, &h[i])) {
             total += (float)h[i].confidence + 1.0f;
         }
     }
 
     float best_score = 0.0f;
     unsigned best_azimuth = 0;
+    float largest = 0.0f;          /* fallback when no group ranks above zero */
+    unsigned largest_azimuth = 0;
     for (unsigned i = 0; i < state->doa_history_len; i++) {
-        if (state->frame_count - h[i].frame >= MIC_FRONTEND_WAKE_WINDOW_FRAMES) {
+        if (!in_wake_window(state, &h[i])) {
             continue;
         }
         unsigned count = 0;
@@ -289,7 +298,7 @@ static int wake_direction(const mic_frontend_state_t *state, unsigned *azimuth_d
         float x = 0.0f;
         float y = 0.0f;
         for (unsigned j = 0; j < state->doa_history_len; j++) {
-            if (state->frame_count - h[j].frame >= MIC_FRONTEND_WAKE_WINDOW_FRAMES) {
+            if (!in_wake_window(state, &h[j])) {
                 continue;
             }
             const float dot = (float)h[i].x_q14 * (float)h[j].x_q14 + (float)h[i].y_q14 * (float)h[j].y_q14;
@@ -305,17 +314,25 @@ static int wake_direction(const mic_frontend_state_t *state, unsigned *azimuth_d
             continue;
         }
         const unsigned azimuth = vector_azimuth(x, y);
+        if (w > largest) {
+            largest = w;
+            largest_azimuth = azimuth;
+        }
         const float score = w * (1.0f - MIC_FRONTEND_WAKE_NOVELTY * idle_share(state, azimuth));
         if (score > best_score) {
             best_score = score;
             best_azimuth = azimuth;
         }
     }
-    if (best_score <= 0.0f) {
-        return 0;
+    if (best_score > 0.0f) {
+        *azimuth_deg = best_azimuth;
+        return 1;
     }
-    *azimuth_deg = best_azimuth;
-    return 1;
+    if (largest > 0.0f) {
+        *azimuth_deg = largest_azimuth;
+        return 1;
+    }
+    return 0;
 }
 
 /* Mic closest to azimuth_deg */

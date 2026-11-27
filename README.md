@@ -38,7 +38,8 @@ See `src/audio/beamformer.h`.
 
 Steering from any speech also follows a TV, and is too slow for a wake word from a
 new direction. So the host can report wake words (`AUDIO_SERVICER_CMD_WAKE_EVENT`):
-the device then locates the wake word from the DOA results of the last ~1.5 s and
+the device then locates the wake word from the DOA results of the ~0.75 s before
+the report (leaving out the ~300 ms the report takes) and
 steers the beams (or, in `MIC_MODE_AUTO_PAIR`, picks the pair facing it) at once,
 and does not re-steer until the conversation ends. With the steering policy
 (`AUDIO_SERVICER_CMD_STEER_POLICY`) set to wake words only, other speech never moves
