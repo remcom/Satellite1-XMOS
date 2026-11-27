@@ -74,11 +74,14 @@ typedef enum {
 } steer_policy_t;
 
 /*
- * Wake word steering: DOA results of the last MIC_FRONTEND_WAKE_WINDOW_FRAMES
- * are kept. A wake word is ~0.8 s long and is reported a few hundred ms after
- * it ended (detection, I2S, resampler and SPI latency).
+ * Wake word steering: the DOA results of the last MIC_FRONTEND_WAKE_WINDOW_FRAMES,
+ * leaving out the last MIC_FRONTEND_WAKE_LATENCY_FRAMES. A wake word is ~0.8 s
+ * long and is reported a few hundred ms after it ended (detection, I2S,
+ * resampler and SPI latency); what was located in that time is whatever else
+ * talks, a TV. The window spans ~0.75 s up to the end of the wake word.
  */
-#define MIC_FRONTEND_WAKE_WINDOW_FRAMES     100 /* ~1.5 s */
+#define MIC_FRONTEND_WAKE_WINDOW_FRAMES     70  /* ~1 s */
+#define MIC_FRONTEND_WAKE_LATENCY_FRAMES    20  /* ~300 ms */
 /* At most this many of them, the most recent (tile 1 is short of RAM) */
 #define MIC_FRONTEND_WAKE_HISTORY           80
 /* The wake word direction is the mean of the largest group of DOA results within this angle ... */
@@ -90,12 +93,13 @@ typedef enum {
 /*
  * Groups are ranked by confidence * (1 - NOVELTY * share of idle speech from
  * their direction over the last ~MIC_FRONTEND_IDLE_DOA_FRAMES located frames).
- * A TV that talks all day loses up to half its weight, so a wake word said
- * while it talks wins with about as many located frames as the TV had in the
- * window. A talker who always speaks from the same place still wins over a
- * stray voice with half their frames.
+ * A TV that talks all day, and so holds all the idle speech, ranks nowhere,
+ * so a wake word said while it talks wins with only a few located frames
+ * (simulated: half the novelty left 2 of 9 wake words over a TV at 30%
+ * of the located frames). When every group ranks nowhere, as for one person
+ * who talks from the same place all day, the largest group wins.
  */
-#define MIC_FRONTEND_WAKE_NOVELTY           0.5f
+#define MIC_FRONTEND_WAKE_NOVELTY           1.0f
 #define MIC_FRONTEND_IDLE_DOA_FRAMES        2000 /* ~30 s of located speech */
 #define MIC_FRONTEND_IDLE_DOA_BINS          36   /* 10 degrees each */
 /*
@@ -166,8 +170,9 @@ void mic_frontend_set_steering(mic_frontend_state_t *state,
                                int conversation_active);
 
 /**
- * A wake word was just detected. Locates it from the DOA results of the last
- * MIC_FRONTEND_WAKE_WINDOW_FRAMES and, unless the policy is
+ * A wake word was just detected. Locates it from the DOA results of the wake
+ * word window (MIC_FRONTEND_WAKE_WINDOW_FRAMES, MIC_FRONTEND_WAKE_LATENCY_FRAMES)
+ * and, unless the policy is
  * STEER_POLICY_FIXED, steers BEAM there at once (crossfaded over the next
  * frame, without the stable time and the dwell) or switches AUTO_PAIR to the
  * mic facing it. Restarts the hold of an active conversation. Call after

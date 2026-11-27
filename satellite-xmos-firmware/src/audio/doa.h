@@ -37,12 +37,34 @@
 #define DOA_SPEECH_SNR          4.0f    /* frame energy over noise floor (~6 dB) to count as speech */
 #define DOA_MIN_ENERGY          1e-9f   /* ~-90 dBFS; quieter frames are ignored */
 #define DOA_NOISE_FLOOR_RISE    1.002f  /* per-frame noise floor rise (~0.6 dB/s) */
-#define DOA_SMOOTHING           0.95f   /* weight of the previous cross spectrum (~300 ms); less makes reverb steer the estimate */
+/*
+ * Weight of the previous cross spectrum (~75 ms). Longer smoothing makes each
+ * result more exact in a live room, but carries a talking TV into the start
+ * of a wake word: simulated TV scenes, 8/9 wake words located at 0.7 against
+ * 6/9 at 0.85 and 1/9 at 0.95. The wake word direction is a vote over ~50
+ * results, which takes up the extra spread (27/27 in rooms up to beta 0.95).
+ */
+#ifndef DOA_SMOOTHING
+#define DOA_SMOOTHING           0.7f
+#endif
 #define DOA_RESET_FRAMES        67      /* non-speech frames (~1 s) after which smoothing restarts */
 #define DOA_MIN_CONFIDENCE      0.3f
 #define DOA_MIN_TDOA_SAMPLES    0.25f   /* smaller TDOAs mean the source is above the ring */
 #define DOA_HOLD_FRAMES         33      /* a result stays valid for ~0.5 s */
 #define DOA_PLAYBACK_HANGOVER_FRAMES 27 /* ~400 ms of speaker tail and room reverb after playback stops */
+/*
+ * Steady noise (fan, hood, hum) is removed from the cross spectra: each pair's
+ * cross spectrum, averaged over the frames that are neither speech nor echo,
+ * is subtracted before the PHAT normalisation, and each bin is weighted by its
+ * power over the averaged noise power. PHAT alone gives every bin the same
+ * vote, so the bins between speech harmonics, where a fan is stronger, outvote
+ * a louder talker (simulated: 10% of talker frames located with a fan at
+ * 8 dB below the talker, 91% with the subtraction).
+ */
+#define DOA_NOISE_AVG_FRAMES    33      /* averaging time constant (~0.5 s) */
+#define DOA_NOISE_MIN_FRAMES    10      /* bins weigh 1 until this many noise frames were seen */
+#define DOA_NOISE_WEIGHT_OFFSET 1.5f    /* bin weight 0 at this power over the noise ... */
+#define DOA_NOISE_WEIGHT_RANGE  6.0f    /* ... rising to 1 at OFFSET * (1 + RANGE): ~10 dB over it */
 
 #define DOA_BIN_LO  ((DOA_BAND_LO_HZ * DOA_FFT_N + DOA_SAMPLE_RATE - 1) / DOA_SAMPLE_RATE)
 #define DOA_BIN_HI  ((DOA_BAND_HI_HZ * DOA_FFT_N) / DOA_SAMPLE_RATE)
@@ -71,6 +93,9 @@ typedef struct {
     int32_t window_q30[DOA_FRAME_SIZE] __attribute__((aligned(8)));
     doa_complex_t lag_step[DOA_BIN_COUNT];      /* e^(j 2 pi k / DOA_IFFT_N): one lag step per band bin */
     doa_complex_t cross[2][DOA_BIN_COUNT];      /* smoothed PHAT cross spectra over the band: NS, EW */
+    doa_complex_t noise_cross[2][DOA_BIN_COUNT];    /* averaged noise cross spectra: NS, EW */
+    float noise_power[DOA_BIN_COUNT];               /* averaged noise power per bin, all four mics */
+    uint32_t noise_frames;
     float noise_floor;
     uint32_t frames_since_speech;
     uint32_t frames_since_result;
